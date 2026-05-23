@@ -126,7 +126,14 @@ def _append_main(main: List[MainElement], elem: MainElement) -> None:
 
     # Merge consecutive homogeneous list types.
     if isinstance(prev, OrderedList) and isinstance(elem, OrderedList):
-        prev.items.extend(elem.items)
+        # If the first item on the new page is a continuation of the last item on the
+        # previous page (split by a page boundary mid-sentence), extend that item's
+        # inlines instead of appending a new list item.
+        if elem.items and elem.items[0].is_continuation and prev.items:
+            prev.items[-1].inlines.extend(elem.items[0].inlines)
+            prev.items.extend(elem.items[1:])
+        else:
+            prev.items.extend(elem.items)
         return
 
     if isinstance(prev, BulletList) and isinstance(elem, BulletList):
@@ -142,7 +149,11 @@ def _append_main(main: List[MainElement], elem: MainElement) -> None:
     if isinstance(prev, ParagraphBlock) and prev.children:
         last = prev.children[-1]
         if isinstance(last, OrderedList) and isinstance(elem, OrderedList):
-            last.items.extend(elem.items)
+            if elem.items and elem.items[0].is_continuation and last.items:
+                last.items[-1].inlines.extend(elem.items[0].inlines)
+                last.items.extend(elem.items[1:])
+            else:
+                last.items.extend(elem.items)
             return
         if isinstance(last, BulletList) and isinstance(elem, BulletList):
             last.items.extend(elem.items)

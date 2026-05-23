@@ -117,18 +117,17 @@ class TestDocument(unittest.TestCase):
             + "\n".join(f"  {f}" for f in failures),
         )
 
-    def test_translation_phase_external_refs_is_ninth(self) -> None:
+    def test_translation_phase_external_refs_is_eighth(self) -> None:
         """'All external object and function references are resolved'
-        must be the ninth <li> in its parent <ol> (translation phase 8,
-        counting from the HTML list which has 9 items due to a wrapped line
-        in phase 5).
+        must be the eighth <li> in its parent <ol> (translation phase 8;
+        the page-boundary continuation of phase 5 is merged into phase 5's item).
         """
         li = self._find_li("All external object and function references are resolved")
         parent = li.parent
         self.assertIsNotNone(parent)
         assert parent is not None
         self.assertEqual(parent.name, "ol", f"Expected parent <ol>, got <{parent.name}>")
-        self.assertEqual(self._child_position(li), 9)
+        self.assertEqual(self._child_position(li), 8)
 
     def test_grammar_cast_expression_structure(self) -> None:
         """cast-expression grammar must use <dl class="grammar"> with correct
@@ -338,6 +337,68 @@ class TestDocument(unittest.TestCase):
             [],
             f"<section> elements without 'section-' id prefix: {bad_ids}",
         )
+
+    # ------------------------------------------------------------------
+    # Annex A — Language syntax summary
+    # ------------------------------------------------------------------
+
+    def test_language_syntax_summary_no_empty_sections(self) -> None:
+        """Every heading in section-language-syntax-summary must be followed by
+        at least one ``dl.grammar`` before the next sibling heading of the same
+        or higher level (i.e. no empty sub-sections).
+
+        The top-level A.1 (Notation) intro heading is excluded because it
+        legitimately contains only a prose paragraph.
+        """
+        section = self.soup.find("section", id="section-language-syntax-summary")
+        self.assertIsNotNone(section, "section#section-language-syntax-summary not found")
+        assert isinstance(section, Tag)
+
+        headings = section.find_all(["h2", "h3", "h4"])
+        for h in headings:
+            h_id = h.get("id", "")
+            # Skip the A.1 / Notation intro heading (prose-only by design)
+            if h_id in ("A.1", "A"):
+                continue
+            level = int(h.name[1])
+            # Walk forward siblings until a heading of equal-or-higher level
+            found_dl = False
+            sibling = h.find_next_sibling()
+            while sibling is not None:
+                assert isinstance(sibling, Tag)
+                sib_name = sibling.name
+                if sib_name in ("h2", "h3", "h4") and int(sib_name[1]) <= level:
+                    break
+                if sibling.find("dl", class_="grammar"):
+                    found_dl = True
+                sibling = sibling.find_next_sibling()
+            self.assertTrue(
+                found_dl,
+                f"Section headed by {h_id!r} contains no dl.grammar before the next sibling heading",
+            )
+
+    def test_language_syntax_summary_all_grammar(self) -> None:
+        """After the intro paragraph, no plain ``<p>`` elements appear inside
+        ``section-language-syntax-summary``.
+
+        The very first ``<div class="p">`` (the "The notation is described in 6.1"
+        paragraph) is intentionally skipped; all subsequent content must consist
+        of grammar ``<dl>`` blocks only.
+        """
+        section = self.soup.find("section", id="section-language-syntax-summary")
+        self.assertIsNotNone(section, "section#section-language-syntax-summary not found")
+        assert isinstance(section, Tag)
+
+        divs = section.find_all("div", class_="p")
+        # The first div is the Notation intro — skip it
+        for div in divs[1:]:
+            assert isinstance(div, Tag)
+            plain_p = div.find("p")
+            self.assertIsNone(
+                plain_p,
+                f"Found plain <p> in section-language-syntax-summary (div id={div.get('id')!r}): "
+                f"{plain_p}",
+            )
 
 
 class TestGrammarIndividualPage(unittest.TestCase):

@@ -178,6 +178,7 @@ class OrderedItem:
     """A <li> element inside an <ol>."""
 
     inlines: List[Inline] = field(default_factory=list[Inline])
+    is_continuation: bool = False  # True when this item continues from the previous page
 
 
 @dataclass

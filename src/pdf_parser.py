@@ -76,15 +76,16 @@ _UNNUMBERED_HEADING_TEXTS = frozenset(
         "Environmental limits",
         "Recommended practice",
         "Foreword",
+        "Introduction",
         "Synopsis",
         "Errors",
         "Bibliography",
         "Index",
-        "Implementation limits"
+        "Implementation limits",
     }
 )
 # fixed level for specific unnumbered headings; else computed from context
-_UNNUMBERED_HEADING_LEVELS: dict = {"Foreword": 1, "Bibliography": 1, "Index": 1}
+_UNNUMBERED_HEADING_LEVELS: dict = {"Foreword": 1, "Introduction": 1, "Bibliography": 1, "Index": 1}
 # unnumbered headings that should also carry an id attribute (for TOC anchors)
 _UNNUMBERED_HEADING_IDS = frozenset({"Bibliography", "Index"})
 
@@ -96,6 +97,11 @@ _UNNUMBERED_HEADING_IDS = frozenset({"Bibliography", "Index"})
 
 def _is_mono(font: str) -> bool:
     return "Mono" in font or "Courier" in font
+
+
+def _is_math(font: str) -> bool:
+    """Return True for Computer Modern math fonts (CMSY, CMMI, CMEX, CMR…)."""
+    return font.startswith("CM")
 
 
 def _is_bold(font: str) -> bool:
@@ -994,11 +1000,16 @@ class PageParser:
         # whose first token happens to match SECTION_ID_RE).
         if not _is_bold(first_span["font"]) or _is_mono(first_span["font"]):
             return False
-        # All subsequent non-mono spans must also be bold; mono (code) spans in the
-        # title (e.g. "<stdalign.h>") are allowed to be non-bold.
+        # All subsequent non-mono/non-math spans must also be bold; mono (code) spans
+        # (e.g. "<stdalign.h>") and math-font spans (e.g. "⌈x⌉" in §3.28) are allowed
+        # to be non-bold.
         for line in lines:
             for span in line["spans"]:
-                if not _is_bold(span["font"]) and not _is_mono(span["font"]):
+                if (
+                    not _is_bold(span["font"])
+                    and not _is_mono(span["font"])
+                    and not _is_math(span["font"])
+                ):
                     return False
         return True
 
@@ -1050,9 +1061,9 @@ class PageParser:
             else:
                 i += 1
                 continue
-            # Build rich title inlines when the title contains mono (code) spans.
+            # Build rich title inlines when the title contains mono (code) or math spans.
             title_inlines: Optional[List[Inline]] = None
-            if title_spans and any(_is_mono(s["font"]) for s in title_spans):
+            if title_spans and any(_is_mono(s["font"]) or _is_math(s["font"]) for s in title_spans):
                 llinks = llmap.get(title_spans[0]["bbox"][1]) if title_spans else []
                 title_inlines = self._spans_to_inlines_with_links(title_spans, llinks or [])
             headings.append(Heading(section_id, title, title_inlines=title_inlines))
@@ -1186,11 +1197,53 @@ class PageParser:
         # editor used a different indentation for the synopsis box).
         return first_x0 >= MAIN_X_MIN and self._is_in_gray_rect(lines[0]["bbox"])
 
+    def _grammar_term_span(self, spans: list[dict]) -> dict | None:
+        """Return the italic span that carries the nonterminal name (ends with ':').
+
+        Handles both the normal format (italic span is first) and the Annex A
+        format where a ``(section-ref)`` prefix precedes the nonterminal::
+
+            italic '('  +  roman '6.4.1)'  +  italic ' token:'
+        """
+        if not spans:
+            return None
+        # Annex A prefix: italic '(' + roman ref + optional whitespace + italic ' term:'
+        # e.g. ('(', Ital), ('6.4.1)', Roma), (' ', Ital), ('token:', Ital)
+        if (
+            len(spans) >= 3
+            and _is_italic(spans[0]["font"])
+            and spans[0]["text"].strip() == "("
+            and not _is_italic(spans[1]["font"])
+        ):
+            # Skip past any whitespace-only italic spans following the section ref
+            cand_idx = 2
+            while (
+                cand_idx < len(spans)
+                and _is_italic(spans[cand_idx]["font"])
+                and not spans[cand_idx]["text"].strip()
+            ):
+                cand_idx += 1
+        else:
+            cand_idx = 0
+        if cand_idx >= len(spans):
+            return None
+        candidate = spans[cand_idx]
+        if not _is_italic(candidate["font"]):
+            return None
+        if candidate["text"].strip().endswith(":"):
+            return candidate
+        # The colon may be in a separate roman span immediately after the term.
+        next_idx = cand_idx + 1
+        if next_idx < len(spans) and spans[next_idx]["text"].strip().startswith(":"):
+            return candidate
+        return None
+
     def _is_grammar_lines(self, lines: list[dict]) -> bool:
         """Return True if *lines* look like a grammar production block.
 
         A grammar block has:
-        - Line 0: first span is italic and its text ends with ':' (the term definition).
+        - Line 0: first span (or the span after an Annex A section-ref prefix) is
+          italic and its text ends with ':' (the term definition).
           Non-italic text may follow on the same line (e.g. "one of" qualifier).
         - Line 1+: production alternatives, indented more than the term line
         """
@@ -1198,19 +1251,28 @@ class PageParser:
             return False
         first_line = lines[0]
         spans = first_line.get("spans", [])
-        if not spans:
-            return False
-        # First span must be italic and end with ':'
-        first_span = spans[0]
-        if not _is_italic(first_span["font"]):
-            return False
-        if not first_span["text"].strip().endswith(":"):
+        if self._grammar_term_span(spans) is None:
             return False
         term_x0 = first_line["bbox"][0]
         for prod_line in lines[1:]:
             if prod_line["bbox"][0] <= term_x0 + 10:
-                return False
+                # A line at the term column is acceptable only if it is itself a
+                # new grammar term (multi-definition block like Annex A).
+                if self._grammar_term_span(prod_line.get("spans", [])) is None:
+                    return False
         return True
+
+    def _is_grammar_intro_line(self, lines: list[dict]) -> bool:
+        """Return True if *lines* is a single-line Annex A grammar term with no inline
+        productions (e.g. ``(6.4.2) keyword: one of``).
+
+        These appear in the Annex A summary when the productions follow in separate
+        multi-column blocks rather than in the same PDF block.
+        """
+        if len(lines) != 1:
+            return False
+        spans = lines[0].get("spans", [])
+        return self._grammar_term_span(spans) is not None
 
     def _is_grammar_continuation_lines(self, lines: list[dict]) -> bool:
         """Return True if *lines* are production-only (no term) continuation lines.
@@ -1222,7 +1284,7 @@ class PageParser:
         if not lines:
             return False
         for line in lines:
-            if line["bbox"][0] < 130.0:
+            if line["bbox"][0] < 125.0:
                 return False
             has_grammar_content = any(
                 _is_italic(s["font"]) or (_is_mono(s["font"]) and s["text"].strip())
@@ -1237,18 +1299,27 @@ class PageParser:
     ) -> GrammarBlock:
         """Extract a GrammarBlock from grammar production lines."""
         term_spans = lines[0].get("spans", [])
+        # Skip Annex A section-ref prefix: italic '(' + roman 'ref)'
+        start_idx = 0
+        if (
+            len(term_spans) >= 3
+            and _is_italic(term_spans[0]["font"])
+            and term_spans[0]["text"].strip() == "("
+            and not _is_italic(term_spans[1]["font"])
+        ):
+            start_idx = 2
         # Term: italic text before the colon; qualifier: non-italic text after
         italic_parts: list[str] = []
         qualifier_parts: list[str] = []
         in_qualifier = False
-        for span in term_spans:
+        for span in term_spans[start_idx:]:
             if not in_qualifier and _is_italic(span["font"]):
                 italic_parts.append(span["text"])
             else:
                 in_qualifier = True
                 qualifier_parts.append(span["text"])
         term_text = "".join(italic_parts).strip().rstrip(":")
-        qualifier_text = "".join(qualifier_parts).strip()
+        qualifier_text = "".join(qualifier_parts).strip().lstrip(":").strip().lstrip(":").strip()
 
         # Group production lines by approximate y position (handles "one of" layout
         # where all alternatives appear on the same horizontal row).
@@ -1278,6 +1349,37 @@ class PageParser:
                     )
             productions.append(inlines)
         return GrammarBlock(term_text, productions, qualifier=qualifier_text)
+
+    def _extract_grammar_blocks(
+        self, lines: list[dict], llmap: Dict[float, List[dict]]
+    ) -> list[GrammarBlock]:
+        """Extract one or more GrammarBlocks from *lines*.
+
+        Most blocks contain a single grammar definition, but Annex A occasionally
+        merges two definitions into one PDF block.  This method splits at any
+        secondary term line (at the same left x as line 0) and calls
+        ``_extract_grammar_block`` on each sub-block.
+        """
+        if not lines:
+            return []
+        term_x0 = lines[0]["bbox"][0]
+        # Find indices of every term line (term at the margin x0, or first line)
+        split_points = [0]
+        for i in range(1, len(lines)):
+            ln = lines[i]
+            if (
+                ln["bbox"][0] <= term_x0 + 10
+                and self._grammar_term_span(ln.get("spans", [])) is not None
+            ):
+                split_points.append(i)
+        if len(split_points) == 1:
+            return [self._extract_grammar_block(lines, llmap)]
+        # Multiple grammar defs — split and extract each
+        result: list[GrammarBlock] = []
+        for k, start in enumerate(split_points):
+            end = split_points[k + 1] if k + 1 < len(split_points) else len(lines)
+            result.append(self._extract_grammar_block(lines[start:end], llmap))
+        return result
 
     def _extract_grammar_block_productions(
         self, lines: list[dict], llmap: Dict[float, List[dict]]
@@ -1330,7 +1432,22 @@ class PageParser:
                 tokens.append(PreToken(text, kind))
         plain = "".join(t.text for t in tokens)
         has_tokens = any(t.kind != TokenKind.PLAIN for t in tokens)
-        return PreBlock(plain, tokens if has_tokens else None)
+        if not has_tokens:
+            return PreBlock(plain, None)
+        # Merge adjacent tokens of the same kind, but keep pure-whitespace tokens
+        # separate from non-whitespace so that declaration anchors can find clean names.
+        merged: list[PreToken] = []
+        for tok in tokens:
+            if merged and merged[-1].kind == tok.kind:
+                prev_ws = not merged[-1].text.strip()
+                tok_ws = not tok.text.strip()
+                if prev_ws == tok_ws:
+                    merged[-1] = PreToken(merged[-1].text + tok.text, tok.kind)
+                else:
+                    merged.append(tok)
+            else:
+                merged.append(tok)
+        return PreBlock(plain, merged)
 
     def _extract_pre_multi(self, blocks: list[dict]) -> PreBlock:
         """Paint all code-block spans onto an ASCII canvas, building PreTokens.
@@ -1951,7 +2068,7 @@ class PageParser:
             if ordered_buffer:
                 items: List[OrderedItem] = []
                 if orphan_ol_continuation is not None:
-                    items.append(OrderedItem(orphan_ol_continuation))
+                    items.append(OrderedItem(orphan_ol_continuation, is_continuation=True))
                     orphan_ol_continuation = None
                 for bk in ordered_buffer:
                     inlines = self._extract_ordered_item_inlines(bk, llmap)
@@ -2072,7 +2189,8 @@ class PageParser:
                     if self._all_mono_lines(lines):
                         current_para.add(self._extract_synopsis_pre(lines))
                     elif self._is_grammar_lines(lines):
-                        current_para.add(self._extract_grammar_block(lines, llmap))
+                        for gb in self._extract_grammar_blocks(lines, llmap):
+                            current_para.add(gb)
                     elif self._lines_start_with_bullet(lines):
                         # Para number sits on its own line; the content lines start with
                         # a bullet.  Route them through the bullet buffer so that any
@@ -2106,33 +2224,45 @@ class PageParser:
                         # Text after a bullet — part of the same list item? No: the
                         # standard puts each bullet in its own block. Flush.
                         flush_bullets()
-                    if current_para is not None:
-                        lines = self._block_lines_without_para_num(block)
-                        if lines:
-                            if self._is_grammar_lines(lines):
-                                current_para.add(self._extract_grammar_block(lines, llmap))
+                    lines = self._block_lines_without_para_num(block)
+                    if lines:
+                        if self._is_grammar_lines(lines):
+                            if current_para is None:
+                                # Annex A: grammar block with no paragraph number
+                                current_para = _ParaBuilder("", 0)
+                            for gb in self._extract_grammar_blocks(lines, llmap):
+                                current_para.add(gb)
+                        elif self._is_grammar_intro_line(lines):
+                            # Annex A single-line term (e.g. "keyword: one of");
+                            # productions follow in separate continuation blocks.
+                            if current_para is None:
+                                current_para = _ParaBuilder("", 0)
+                            current_para.add(self._extract_grammar_block(lines, llmap))
+                        elif self._is_grammar_continuation_lines(lines):
+                            # Productions that either continue across a page boundary
+                            # or follow a single-line Annex A term block.
+                            prods = self._extract_grammar_block_productions(lines, llmap)
+                            if (
+                                current_para is not None
+                                and current_para._raw
+                                and isinstance(current_para._raw[-1], GrammarBlock)
+                            ):
+                                # Attach to the active grammar block (Annex A columns)
+                                current_para._raw[-1].productions.extend(prods)
+                            elif current_para is None:
+                                # Orphan continuation across a page boundary
+                                elements.append(ParagraphBlock("", 0, [GrammarBlock("", prods)]))
                             else:
+                                # current_para exists but last child is not a grammar
+                                # block — treat as prose (e.g. wrapped code lines).
                                 inlines = self._process_lines_to_inlines(lines, llmap)
                                 current_para.add(_TempProseBlock(inlines))
-                    else:
-                        # Potential orphan OL item tail spilling over from previous page,
-                        # or a grammar production continuation across a page boundary.
-                        lines = self._block_lines_without_para_num(block)
-                        if lines:
-                            if self._is_grammar_continuation_lines(lines):
-                                orphan_grammar_continuation = (
-                                    self._extract_grammar_block_productions(lines, llmap)
-                                )
-                                flush_para()
-                                elements.append(
-                                    ParagraphBlock(
-                                        "", 0, [GrammarBlock("", orphan_grammar_continuation)]
-                                    )
-                                )
-                            else:
-                                orphan_ol_continuation = self._process_lines_to_inlines(
-                                    lines, llmap
-                                )
+                        elif current_para is not None:
+                            inlines = self._process_lines_to_inlines(lines, llmap)
+                            current_para.add(_TempProseBlock(inlines))
+                        else:
+                            # Potential orphan OL item tail spilling from previous page
+                            orphan_ol_continuation = self._process_lines_to_inlines(lines, llmap)
 
         flush_pre_buf()
         flush_ordered()
