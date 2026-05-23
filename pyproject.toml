@@ -1,0 +1,18 @@
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false   # don't force one-item-per-line just because of a trailing comma
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes (unused imports, undefined names, …)
+    "I",   # isort
+]
+ignore = [
+    "E501",  # line too long — handled by the formatter, not the linter
+]

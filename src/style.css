@@ -1,0 +1,418 @@
+/* ============================================================
+   Base typography
+   ============================================================ */
+
+body {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 16px;
+    line-height: 1.6;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 1rem 1.5rem;
+    background: #fff;
+    color: #000;
+}
+
+p {
+    margin: 0.75rem 0;
+}
+
+h1 {
+    font-size: 2rem;
+    margin: 1.5rem 0;
+}
+
+h2 {
+    font-size: 1.333rem;
+    margin: 1.25rem 0;
+}
+
+h3 {
+    font-size: 1.25rem;
+    margin: 1.15rem 0;
+}
+
+h4 {
+    font-size: 1.15rem;
+    margin: 1rem 0;
+}
+
+h5 {
+    font-size: 1.075rem;
+    margin: 0.75rem 0;
+}
+
+h6,
+.unnumbered {
+    /* Unnumbered sub-section labels (Synopsis, Description, Returns, …)
+       are rendered as headings for document structure but must appear at
+       normal body-text size — only the bold weight distinguishes them. */
+    font-size: 1rem;
+    margin: 0.5rem 0;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.unnumbered,
+div[role="heading"] {
+    font-weight: bold;
+}
+
+:is(h1, h2, h3, h4, h5):has(+ :is(h2, h3, h4, h5, h6, .unnumbered, div[role="heading"])) {
+    margin-bottom: 0.25rem;
+}
+
+:is(h1, h2, h3, h4, h5)+ :is(h2, h3, h4, h5, h6, .unnumbered, div[role="heading"]) {
+    margin-top: 0;
+}
+
+/* ============================================================
+   Gutter layout — paragraph numbers live to the left of content
+   ============================================================ */
+
+main {
+    margin-left: 4rem;
+}
+
+.iso-cover {
+    border-top: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    padding: 0.5em 0;
+    margin: 1em 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.iso-cover>div:nth-child(2) {
+    text-align: center;
+}
+
+.iso-cover>div:last-child {
+    text-align: right;
+}
+
+.doc-title {
+    font-size: 1.25rem;
+    font-weight: bold;
+    margin: 0.75em 0 1.5em;
+}
+
+dt {
+    font-weight: bold;
+}
+
+.p {
+    position: relative;
+    margin-bottom: 0.6em;
+}
+
+.p-num {
+    position: absolute;
+    left: -3.8rem;
+    top: 0;
+    width: 3.2rem;
+    text-align: right;
+    line-height: 1.6;
+    user-select: none;
+    color: inherit;
+    text-decoration: none;
+}
+
+pre a {
+    color: inherit;
+    text-decoration: inherit;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+a.section-num {
+    color: inherit;
+    text-decoration: none;
+}
+
+a.section-num:hover {
+    text-decoration: underline;
+}
+
+/* Subtle highlight on fragment-targeted elements */
+:target {
+    background-color: rgba(255, 200, 0, 0.15);
+}
+
+/* ============================================================
+   Code blocks — match PDF appearance
+   Background: rgb(247,247,247) = #f7f7f7  (fill 0.97 × 255)
+   Border:     rgb(128,128,128) = #808080  (stroke 0.5 × 255)
+   Left padding imitates the inset from the page margin seen in
+   the PDF (code text starts ~30 pt inside the gray box).
+   ============================================================ */
+
+pre {
+    background: #f7f7f7;
+    border: 1px solid #808080;
+    padding: 0.55em 1em 0.55em 2.5em;
+    overflow-x: auto;
+    font-size: 0.875em;
+    line-height: 1.5;
+    border-radius: 2px;
+}
+
+pre var {
+    font-style: italic;
+    font-family: inherit;
+}
+
+/* ============================================================
+   Lists — em dash (—) instead of the default circle/disc
+   ============================================================ */
+
+ul {
+    list-style-type: "— ";
+}
+
+ul.nested {
+    list-style-type: "\2022  ";
+    margin-top: 0.25em;
+}
+
+#section-contents ol {
+    list-style-type: none;
+    margin: 0;
+    padding-left: 2rem;
+}
+
+#section-contents h2 {
+    font-size: 1.15rem;
+    margin-top: 1.25rem;
+    margin-bottom: 0;
+}
+
+/* ============================================================
+   Syntax highlighting inside <pre> blocks
+   Colors match the PDF's own syntax scheme.
+   ============================================================ */
+
+/* Grammar production blocks <dl class="grammar">
+   Nonterminal definitions and their production alternatives. */
+dl.grammar {
+    margin: 0.5em 0 0.5em 0;
+}
+
+dl.grammar dt {
+    font-weight: normal;
+    margin-top: 0.4em;
+}
+
+dl.grammar dd {
+    margin-left: 2em;
+}
+
+dl.grammar dd>*+ :not(sup, sub) {
+    margin-left: 0.5rem;
+}
+
+i.nonterminal {
+    font-style: italic;
+}
+
+dl.grammar a {
+    text-decoration: none;
+    color: inherit;
+}
+
+.tk-kw {
+    font-weight: bold;
+}
+
+.tk-macro {
+    color: #8c0000;
+    font-weight: bold;
+}
+
+.tk-comment {
+    color: #8c007a;
+}
+
+.tk-comment-kw {
+    color: #8c007a;
+    font-weight: bold;
+}
+
+.tk-fn {
+    color: #005900;
+    font-weight: bold;
+}
+
+.tk-tg-macro {
+    color: #546600;
+    font-weight: bold;
+}
+
+.tk-const {
+    color: #610040;
+}
+
+.tk-ident {
+    color: #29295c;
+}
+
+.tk-lit {
+    color: #0000ff;
+    font-weight: bold;
+}
+
+.tk-typename {
+    color: #00008c;
+    font-weight: bold;
+}
+
+.tk-generic {
+    color: #00008c;
+    font-style: italic;
+    font-weight: bold;
+}
+
+.tk-attr {
+    color: #612661;
+    font-weight: bold;
+}
+
+.tk-str {
+    color: #592626;
+}
+
+.tk-wide-str {
+    color: #590026;
+}
+
+.tk-member {
+    color: #000073;
+}
+
+/* ============================================================
+   Dark mode
+   ============================================================ */
+
+/* ============================================================
+   Draft notice banner
+   ============================================================ */
+
+.draft-notice {
+    background: #fff8e1;
+    border: 1px solid #f0c040;
+    border-radius: 3px;
+    padding: 0.6em 1em;
+    margin-left: 4rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.9rem;
+}
+
+.draft-notice p {
+    margin: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+    .draft-notice {
+        background: #2a2400;
+        border-color: #7a6200;
+    }
+}
+
+@media (prefers-color-scheme: dark) {
+    body {
+        background: #1a1a1a;
+        color: #c8c8c8;
+    }
+
+    a {
+        color: #58a6ff;
+    }
+
+    a:visited {
+        color: #b08aff;
+    }
+
+    pre {
+        background: #252525;
+        border-color: #4a4a4a;
+        color: #d4d4d4;
+    }
+
+    /* Syntax token overrides — all verified AAA (≥7:1) against #252525 */
+    .tk-kw {
+        color: #d2a8ff;
+        font-weight: bold;
+    }
+
+    .tk-macro {
+        color: #ffa198;
+        font-weight: bold;
+    }
+
+    .tk-comment {
+        color: #b4b4d4;
+    }
+
+    .tk-comment-kw {
+        color: #c0c0ff;
+        font-weight: bold;
+    }
+
+    .tk-fn {
+        color: #cfe0d1;
+        font-weight: bold;
+    }
+
+    .tk-tg-macro {
+        color: #a7e39e;
+        font-weight: bold;
+    }
+
+    .tk-const {
+        color: #fdba74;
+    }
+
+    .tk-ident {
+        color: #93c5fd;
+    }
+
+    .tk-lit {
+        color: #79b8ff;
+        font-weight: bold;
+    }
+
+    .tk-typename {
+        color: #aacbff;
+        font-weight: bold;
+    }
+
+    .tk-generic {
+        color: #aacbff;
+        font-style: italic;
+        font-weight: bold;
+    }
+
+    .tk-attr {
+        color: #d4a0d4;
+        font-weight: bold;
+    }
+
+    .tk-str {
+        color: #c9a07a;
+    }
+
+    .tk-wide-str {
+        color: #e0806e;
+    }
+
+    .tk-member {
+        color: #7a9ed4;
+    }
+}
