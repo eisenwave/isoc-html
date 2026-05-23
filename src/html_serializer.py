@@ -92,13 +92,21 @@ def _pre_block_html(item: PreBlock, in_synopsis: bool = False) -> str:
         parts: list[str] = []
         for idx, t in enumerate(tokens):
             txt = escape(t.text)
-            # Decl anchor: non-whitespace FUNCTION token immediately before '('
-            if in_synopsis and t.kind == TokenKind.FUNCTION and t.text.strip():
+            # Decl anchor: non-whitespace FUNCTION or TYPE_GENERIC_MACRO token immediately before '('
+            if (
+                in_synopsis
+                and t.kind in (TokenKind.FUNCTION, TokenKind.TYPE_GENERIC_MACRO)
+                and t.text.strip()
+            ):
                 nxt = tokens[idx + 1] if idx + 1 < len(tokens) else None
                 if nxt is not None and nxt.kind == TokenKind.PLAIN and nxt.text.startswith("("):
-                    decl_id = f"decl-{t.text}"
+                    name = t.text.strip()
+                    decl_id = f"decl-{name}"
+                    prefix = t.text[: len(t.text) - len(t.text.lstrip())]
+                    if prefix:
+                        parts.append(escape(prefix))
                     parts.append(
-                        f'<a id="{decl_id}" href="#{decl_id}"><span class="tk-fn">{txt}</span></a>'
+                        f'<a id="{decl_id}" href="#{decl_id}"><span class="tk-{t.kind.value}">{escape(name)}</span></a>'
                     )
                     continue
             if t.kind == TokenKind.PLACEHOLDER:
