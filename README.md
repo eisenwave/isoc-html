@@ -56,9 +56,22 @@ Convert a single PDF page (e.g. PDF page 30 = document page 13):
 
 ## Running Tests
 
+The ``--pdf`` option is **required** — point it at the draft you want to test::
+
 ```bash
-.venv/bin/pytest tests/ -q
+.venv/bin/pytest tests/ --pdf n3685.pdf -q
 ```
+
+To test a different draft::
+
+```bash
+.venv/bin/pytest tests/test_document.py --pdf n3886.pdf -q
+```
+
+Not all structural tests are expected to pass for every draft
+(paragraph numbering and section content differ between revisions),
+but the abstract change-entry test and paragraph-ID uniqueness checks
+are draft-agnostic.
 
 ---
 

@@ -65,11 +65,13 @@ Python 3.12+ is required.
 ## Running Tests
 
 ```bash
-.venv/bin/pytest tests/ -q
+.venv/bin/pytest tests/ --pdf n3685.pdf -q
 ```
 
-Expected: **433 passed**.
-The test suite reads `n3685.pdf` and parses the whole document,
+The ``--pdf`` option is required — always specify which PDF draft to test.
+
+Expected: **484 passed** (for n3685.pdf).
+The test suite reads the PDF and parses the whole document,
 so it requires the PDF to be present.
 
 `test_pages.py` does round-trip tests:
@@ -84,7 +86,7 @@ and runs structural checks on the resulting HTML with BeautifulSoup.
 To run only the document tests:
 
 ```bash
-.venv/bin/pytest tests/test_document.py -q
+.venv/bin/pytest tests/test_document.py --pdf n3685.pdf -q
 ```
 
 ---

@@ -17,10 +17,10 @@ from src.dom import Heading, ParagraphBlock
 from src.html_deserializer import parse_html
 from src.normalize import norm_page
 from src.pdf_parser import parse_page
+from tests.conftest import get_pdf_path
 
-PROJECT_ROOT = Path(__file__).parent.parent
-PDF_PATH = str(PROJECT_ROOT / "n3685.pdf")
-PAGES_DIR = PROJECT_ROOT / "pages"
+PDF_PATH = get_pdf_path()
+PAGES_DIR = Path(__file__).parent.parent / "pages"
 
 # HTML page N lives at 1-based PDF page N + (30 - 13).
 _PDF_PAGE_OFFSET = 30 - 13

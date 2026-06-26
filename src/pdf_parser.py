@@ -1595,6 +1595,38 @@ class PageParser:
                 lines.append({**line, "spans": spans})
         return self._process_lines_to_inlines(lines, llmap)
 
+    def _extract_bullet_entries(
+        self, block: dict, llmap: Dict[float, List[dict]]
+    ) -> List[List[Inline]]:
+        """Extract bullet items from *block*, splitting multi-entry blocks
+        (where each line starts with an em-dash) into individual entries.
+
+        Single-entry blocks return a one-element list for backward compatibility.
+        """
+        lines = block.get("lines", [])
+        # Determine how many lines start with an em-dash.
+        dash_line_indices: list[int] = []
+        for li, line in enumerate(lines):
+            for span in line.get("spans", []):
+                t = span["text"].strip()
+                if t:
+                    if t.startswith("\u2014") or t == "\u2014":
+                        dash_line_indices.append(li)
+                    break
+
+        # If at most one dash-bearing line, use the original single-entry path.
+        if len(dash_line_indices) <= 1:
+            return [self._extract_bullet_inlines(block, llmap)]
+
+        # Multiple dash lines: split the block into per-entry sub-blocks.
+        entries: List[List[Inline]] = []
+        for k, start_idx in enumerate(dash_line_indices):
+            end_idx = dash_line_indices[k + 1] if k + 1 < len(dash_line_indices) else len(lines)
+            sub_lines = lines[start_idx:end_idx]
+            sub_block: dict = {**block, "lines": sub_lines}
+            entries.append(self._extract_bullet_inlines(sub_block, llmap))
+        return entries
+
     def _extract_nested_bullet_inlines(
         self, block: dict, llmap: Dict[float, List[dict]]
     ) -> List[Inline]:
@@ -1878,9 +1910,10 @@ class PageParser:
 
         def flush_bullets() -> None:
             if bullet_buffer:
-                items = [
-                    BulletItem(None, self._extract_bullet_inlines(b, llmap)) for b in bullet_buffer
-                ]
+                items: list[BulletItem] = []
+                for b in bullet_buffer:
+                    for entry_inlines in self._extract_bullet_entries(b, llmap):
+                        items.append(BulletItem(None, entry_inlines))
                 elements.append(BulletList(items))
                 bullet_buffer.clear()
 
@@ -2047,12 +2080,17 @@ class PageParser:
                         if pending_nested and items:
                             items[-1].nested = BulletList(pending_nested)
                             pending_nested = []
-                        top_level_count += 1
-                        item_id = (
-                            f"{current_para.para_id}.{top_level_count}" if current_para else None
-                        )
-                        inlines = self._extract_bullet_inlines(bk, llmap)
-                        items.append(BulletItem(item_id, inlines))
+                        # Split multi-entry bullet blocks (each line starts with em-dash)
+                        # into individual BulletItems.
+                        entry_inlines_list = self._extract_bullet_entries(bk, llmap)
+                        for entry_inlines in entry_inlines_list:
+                            top_level_count += 1
+                            item_id = (
+                                f"{current_para.para_id}.{top_level_count}"
+                                if current_para
+                                else None
+                            )
+                            items.append(BulletItem(item_id, entry_inlines))
                 if pending_nested and items:
                     items[-1].nested = BulletList(pending_nested)
                 if current_para:
@@ -2083,9 +2121,7 @@ class PageParser:
                 # No real OL items: the orphan text is standalone prose
                 # (e.g. a Recommended-practice note), not an OL continuation.
                 if orphan_ol_continuation is not None:
-                    elements.append(
-                        ParagraphBlock("", 0, [ProseBlock(orphan_ol_continuation)])
-                    )
+                    elements.append(ParagraphBlock("", 0, [ProseBlock(orphan_ol_continuation)]))
                 orphan_ol_continuation = None
 
         defn_buffer: List[DefnItem] = []
