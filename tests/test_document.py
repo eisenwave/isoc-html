@@ -369,7 +369,9 @@ class TestDocument(unittest.TestCase):
                 sib_name = sibling.name
                 if sib_name in ("h2", "h3", "h4") and int(sib_name[1]) <= level:
                     break
-                if sibling.find("dl", class_="grammar"):
+                if sib_name == "dl" and "grammar" in (sibling.get("class") or []):
+                    found_dl = True
+                elif sibling.find("dl", class_="grammar"):
                     found_dl = True
                 sibling = sibling.find_next_sibling()
             self.assertTrue(
@@ -399,6 +401,100 @@ class TestDocument(unittest.TestCase):
                 f"Found plain <p> in section-language-syntax-summary (div id={div.get('id')!r}): "
                 f"{plain_p}",
             )
+
+    def test_paragraph_ids_globally_unique(self) -> None:
+        """Every ``a.p-num`` anchor must have a globally unique target ID.
+
+        Paragraph numbers that cannot be linked to a heading (because the heading
+        is on a previous page) can end up with bare ``pN`` IDs that collide across
+        sections.  This test ensures the document-level merge assigns every
+        paragraph a unique, section-scoped ID.
+        """
+        from collections import Counter
+
+        ids: list[str] = []
+        for a in self.soup.find_all("a", class_="p-num"):
+            href = a.get("href", "")
+            if isinstance(href, str) and href.startswith("#"):
+                ids.append(href[1:])
+
+        counter = Counter(ids)
+        dupes = {k: v for k, v in counter.items() if v > 1}
+
+        self.assertEqual(
+            len(dupes),
+            0,
+            f"Duplicate paragraph IDs found ({len(dupes)} IDs, {sum(dupes.values()) - len(dupes)} "
+            f"extra occurrences):\n"
+            + "\n".join(f"  #{k}: {v}×" for k, v in sorted(dupes.items())[:30]),
+        )
+
+        # Also verify every p-num href resolves to exactly one element.
+        # Build a set of all element IDs once (O(n)) rather than calling
+        # soup.find_all(id=…) for each ID (O(n²)).
+        all_element_ids: set[str] = set()
+        for elem in self.soup.find_all(True):
+            eid = elem.get("id")
+            if isinstance(eid, str):
+                all_element_ids.add(eid)
+        missing = [i for i in ids if i not in all_element_ids]
+        self.assertEqual(
+            missing,
+            [],
+            f"Paragraph href targets with no matching element: {missing}",
+        )
+
+    def test_code_blocks_merged_into_containing_paragraph(self) -> None:
+        """Code blocks that start at the top of a page (orphaned by the per-page
+        parser) must be merged into the preceding paragraph during document assembly.
+
+        Without this merge the code block lives in a placeholder ``div.p`` with
+        paragraph number 0, disconnected from its surrounding prose.
+        """
+        cases = [
+            ("6.7.11p41", "int a[A_MAX]"),
+            ("6.7.11p33", "short q[4][3][2]"),
+            ("6.8.4p4", "int p(int)"),
+            ("6.5.7p12", "int a[n][m]"),
+            ("6.8.7.3p5", "outer:"),
+        ]
+        for para_id, expected in cases:
+            div = self.soup.find("div", id=para_id)
+            self.assertIsNotNone(
+                div,
+                f"Paragraph {para_id!r} not found in document",
+            )
+            assert div is not None
+            pre = div.find("pre")
+            self.assertIsNotNone(
+                pre,
+                f"Paragraph {para_id!r} has no <pre> element",
+            )
+            self.assertIn(
+                expected,
+                div.get_text(),
+                f"Paragraph {para_id!r} must contain {expected!r}",
+            )
+
+    def test_no_placeholder_paragraph_numbers(self) -> None:
+        """No ``<span class="p-num">0</span>`` elements may remain in the final
+        document.
+
+        Zero paragraph numbers are placeholders emitted by the per-page parser
+        when a code block or grammar block starts at the top of a page with no
+        surrounding paragraph context.  After the document merge step moves them
+        into the preceding paragraph where possible, any that remain (e.g. Annex A
+        grammar blocks that never had a paragraph number in the PDF) are flattened
+        so their content appears directly at section level without a wrapper.
+        """
+        zero_spans = [
+            s for s in self.soup.find_all("span", class_="p-num") if s.get_text().strip() == "0"
+        ]
+        self.assertEqual(
+            len(zero_spans),
+            0,
+            f"Found {len(zero_spans)} placeholder paragraph numbers",
+        )
 
 
 class TestGrammarIndividualPage(unittest.TestCase):

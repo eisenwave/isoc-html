@@ -210,6 +210,15 @@ def norm_main_element(elem: MainElement) -> MainElement:
         return ISOCoverBlock(elem.standard_ref.strip(), elem.title.strip())
     elif isinstance(elem, ProseBlock):
         return ProseBlock(norm_inlines(elem.inlines))
+    elif isinstance(elem, GrammarBlock):
+        return GrammarBlock(
+            elem.term,
+            [norm_inlines(p) for p in elem.productions],
+            elem.qualifier,
+            elem.anchor_id,
+        )
+    elif isinstance(elem, PreBlock):
+        return PreBlock(elem.text)
     elif isinstance(elem, TocHeading):
         return TocHeading(elem.section_id.strip(), elem.title.strip())
     else:

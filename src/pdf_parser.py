@@ -2080,7 +2080,12 @@ class PageParser:
                     elements.append(ol)
                 ordered_buffer = []
             else:
-                # No real OL items: discard any stale orphan
+                # No real OL items: the orphan text is standalone prose
+                # (e.g. a Recommended-practice note), not an OL continuation.
+                if orphan_ol_continuation is not None:
+                    elements.append(
+                        ParagraphBlock("", 0, [ProseBlock(orphan_ol_continuation)])
+                    )
                 orphan_ol_continuation = None
 
         defn_buffer: List[DefnItem] = []
@@ -2261,7 +2266,9 @@ class PageParser:
                             inlines = self._process_lines_to_inlines(lines, llmap)
                             current_para.add(_TempProseBlock(inlines))
                         else:
-                            # Potential orphan OL item tail spilling from previous page
+                            # Potential orphan OL item tail spilling from previous page.
+                            # If no OL items follow, flush_ordered will turn this into
+                            # a placeholder prose paragraph instead of discarding it.
                             orphan_ol_continuation = self._process_lines_to_inlines(lines, llmap)
 
         flush_pre_buf()

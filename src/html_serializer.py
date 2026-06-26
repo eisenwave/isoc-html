@@ -221,6 +221,10 @@ def _main_element(elem: MainElement, in_synopsis: bool = False) -> str:
         return cover
     elif isinstance(elem, ProseBlock):
         return f"<p>{_inlines(elem.inlines)}</p>"
+    elif isinstance(elem, PreBlock):
+        return _pre_block_html(elem, in_synopsis)
+    elif isinstance(elem, GrammarBlock):
+        return _para_content(elem)
     elif isinstance(elem, TocHeading):
         sid = escape(elem.section_id)
         return f'<h2 class="toc-heading"><a href="#{sid}">{sid}</a> {escape(elem.title)}</h2>'
