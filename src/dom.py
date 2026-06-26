@@ -300,6 +300,8 @@ MainElement = Union[
     ProseBlock,
     TocHeading,
     TocList,
+    GrammarBlock,
+    PreBlock,
 ]
 
 

@@ -27,6 +27,7 @@ from .dom import (
     DfnNode,
     Footnote,
     GrammarBlock,
+    Heading,
     Inline,
     LinkNode,
     MainElement,
@@ -103,6 +104,18 @@ def parse_document(pdf_path: str) -> Document:
         for elem in page.main:
             _append_main(current_section.elements, elem)
         footnotes.extend(page.footnotes)
+
+    # Fix paragraph IDs that are missing a section prefix (bare "pN").
+    # This happens when the nearest heading is on a previous page.
+    for section in sections:
+        _fix_paragraph_ids(section.elements, section.slug)
+
+    # Flatten placeholder paragraphs (num=0) that contain only raw blocks
+    # (grammar, code) — the content never had a paragraph number in the PDF,
+    # so the div.p wrapper is pointless.  Prose num=0 paragraphs are kept
+    # because they contain real text that just happened to lack a number.
+    for section in sections:
+        _flatten_placeholder_paragraphs(section.elements)
 
     # Grammar linking operates on a flat element list; shared references
     # mean mutations propagate back into each SectionBlock automatically.
@@ -199,7 +212,112 @@ def _append_main(main: List[MainElement], elem: MainElement) -> None:
             prev.children.extend(elem.children[1:])
             return
 
+    # Merge an orphan ParagraphBlock (num=0, id="") into the previous
+    # ParagraphBlock.  This happens when a PreBlock or GrammarBlock starts
+    # at the top of a page but the containing paragraph is on the preceding
+    # page, so the per-page parser cannot attach it to a paragraph context.
+    if isinstance(prev, ParagraphBlock) and isinstance(elem, ParagraphBlock):
+        if elem.num == 0 and not elem.id:
+            prev.children.extend(elem.children)
+            return
+
     main.append(elem)
+
+
+# ---------------------------------------------------------------------------
+# Paragraph ID fix-up
+# ---------------------------------------------------------------------------
+
+
+def _fix_paragraph_ids(elements: List[MainElement], section_slug: str = "") -> None:
+    """Fix ``ParagraphBlock`` IDs that are missing a section-number prefix.
+
+    When the nearest heading is on a previous page, the per-page parser
+    cannot determine the section prefix and produces bare IDs like ``p1``.
+    This pass walks the merged section and prepends the most recent
+    heading's ``section_id`` to every bare paragraph ID, guaranteeing
+    uniqueness across the document.
+
+    When no numbered heading is available (e.g. Foreword, Introduction),
+    *section_slug* is used as a fallback prefix.
+
+    Collisions (where a bare ID, once prefixed, would duplicate an existing
+    ID) are resolved by prepending *section_slug* instead, or by appending
+    a disambiguation counter when even that collides.
+    """
+    # Collect every existing paragraph ID so we can detect collisions.
+    seen_ids: set[str] = {
+        e.id for e in elements if isinstance(e, ParagraphBlock) and e.id and not _is_bare_id(e.id)
+    }
+
+    current_section_id = ""
+    for elem in elements:
+        if isinstance(elem, Heading) and elem.section_id:
+            current_section_id = elem.section_id
+        elif isinstance(elem, ParagraphBlock) and elem.id:
+            if _is_bare_id(elem.id):
+                prefix = current_section_id or section_slug
+                if prefix:
+                    candidate = prefix + elem.id
+                    if candidate not in seen_ids:
+                        elem.id = candidate
+                    elif section_slug and section_slug != prefix:
+                        # Try the section slug as an alternative prefix.
+                        fallback = section_slug + elem.id
+                        if fallback not in seen_ids:
+                            elem.id = fallback
+                        else:
+                            # Append a disambiguation counter.
+                            ctr = 2
+                            while f"{fallback}-{ctr}" in seen_ids:
+                                ctr += 1
+                            elem.id = f"{fallback}-{ctr}"
+                    else:
+                        # Append a disambiguation counter to the candidate.
+                        ctr = 2
+                        while f"{candidate}-{ctr}" in seen_ids:
+                            ctr += 1
+                        elem.id = f"{candidate}-{ctr}"
+                seen_ids.add(elem.id)
+
+
+def _is_bare_id(id_str: str) -> bool:
+    """Return True if *id_str* is a bare paragraph ID like ``p1``, ``p42``."""
+    return id_str.startswith("p") and id_str[1:].isdigit()
+
+
+def _flatten_placeholder_paragraphs(elements: List[MainElement]) -> None:
+    """Replace placeholder ``ParagraphBlock(num=0)`` elements with their
+    children placed directly in the element list.
+
+    Both raw-block placeholders (grammar, pre) and prose placeholders
+    (e.g. Recommended-practice notes that lacked a paragraph number in
+    the PDF) are unwrapped so the content appears at section level without
+    a bogus paragraph-number span.
+    """
+    from .dom import (
+        GrammarBlock as _GrammarBlock,
+    )
+    from .dom import (
+        PreBlock as _PreBlock,
+    )
+    from .dom import (
+        ProseBlock as _ProseBlock,
+    )
+
+    i = 0
+    while i < len(elements):
+        elem = elements[i]
+        if isinstance(elem, ParagraphBlock) and elem.num == 0:
+            flat: list[MainElement] = []
+            for c in elem.children:
+                if isinstance(c, (_GrammarBlock, _PreBlock, _ProseBlock)):
+                    flat.append(c)
+            if flat:
+                elements[i : i + 1] = flat
+                i += len(flat)
+                continue
+        i += 1
 
 
 # ---------------------------------------------------------------------------
