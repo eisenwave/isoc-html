@@ -4,6 +4,10 @@ These tests build the full merged document from the PDF (exactly as
 ``generate.py`` does) and run structural/content checks on the resulting
 HTML using BeautifulSoup.
 
+Pass ``--pdf PATH`` to pytest to test a different draft::
+
+    pytest tests/test_document.py --pdf n3886.pdf
+
 Adding a new check:
   1. Write a ``test_*`` method on ``TestDocument``.
   2. Use the helper methods on ``self`` for common queries:
@@ -15,13 +19,13 @@ Adding a new check:
 from __future__ import annotations
 
 import unittest
-from pathlib import Path
 from typing import Optional
 
 from bs4 import BeautifulSoup, Tag
 
-PROJECT_ROOT = Path(__file__).parent.parent
-PDF_PATH = str(PROJECT_ROOT / "n3685.pdf")
+from tests.conftest import get_pdf_path
+
+PDF_PATH = get_pdf_path()
 
 
 class TestDocument(unittest.TestCase):
@@ -496,6 +500,51 @@ class TestDocument(unittest.TestCase):
             f"Found {len(zero_spans)} placeholder paragraph numbers",
         )
 
+    def test_abstract_change_entries_in_li(self) -> None:
+        """Every ``N`` followed by four digits and ``:`` inside the abstract
+        section must appear at the start of an ``<li>`` element.
+
+        Change entries like ``N3192: Sequential hexdigits`` should not be
+        buried inside a combined ``<li>`` with other entries; each must be
+        its own bullet.  This test works for both ``n3685.pdf`` and
+        ``n3886.pdf`` (and future drafts) as long as the change-entry
+        detection splits multi-line PDF blocks correctly.
+        """
+        import re
+
+        abstract = self.soup.find("section", id="section-abstract")
+        self.assertIsNotNone(abstract, "section#section-abstract not found")
+        assert abstract is not None
+
+        n_ref = re.compile(r"N\d{4}:")
+
+        failures: list[str] = []
+        for ul in abstract.find_all("ul"):
+            assert isinstance(ul, Tag)
+            for li in ul.find_all("li", recursive=False):
+                text = li.get_text().strip()
+                # Find all N-ref matches in this li
+                matches = list(n_ref.finditer(text))
+                if len(matches) > 1:
+                    # Multiple N-refs in one li means entries weren't split
+                    failures.append(f"<li> contains {len(matches)} change entries: {text[:120]!r}")
+                elif len(matches) == 1 and matches[0].start() > 5:
+                    # N-ref doesn't start near the beginning of the li
+                    failures.append(
+                        f"<li> N-ref starts at offset {matches[0].start()}: {text[:120]!r}"
+                    )
+                elif len(matches) == 0 and text:
+                    # No N-ref — could be an Editorial entry or other non-N change
+                    # That's fine as long as there's only one entry here.
+                    pass
+
+        self.assertEqual(
+            failures,
+            [],
+            "Abstract <li> elements with multiple or misplaced change entries:\n"
+            + "\n".join(f"  {f}" for f in failures),
+        )
+
 
 class TestGrammarIndividualPage(unittest.TestCase):
     """Checks on individual-page grammar serialization (no document-level linking)."""
@@ -507,8 +556,7 @@ class TestGrammarIndividualPage(unittest.TestCase):
         from src.html_serializer import serialize
         from src.pdf_parser import parse_page
 
-        pdf_path = str(PROJECT_ROOT / "n3685.pdf")
-        html = serialize(parse_page(pdf_path, 99))  # page 83
+        html = serialize(parse_page(PDF_PATH, 99))  # page 83
         cls.soup = BeautifulSoup(html, "html.parser")
 
     def test_grammar_dd_uses_nonterminal_not_dfn(self) -> None:
