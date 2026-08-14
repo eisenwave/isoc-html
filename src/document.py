@@ -37,8 +37,26 @@ from .dom import (
     PreBlock,
     ProseBlock,
     SectionBlock,
+    TextNode,
 )
 from .pdf_parser import parse_page_from_doc
+
+
+def _join_inlines(a: List[Inline], b: List[Inline]) -> None:
+    """Extend inline list *a* with *b*, keeping word spacing at the boundary.
+
+    When a paragraph is split across a page boundary, the PDF line break
+    between the last word on the old page and the first word on the new page
+    is not part of either span's text.  If neither side carries whitespace at
+    the boundary, a separating space is inserted so the merged prose reads
+    as a single sentence.
+    """
+    if a and b:
+        last_text = getattr(a[-1], "text", "")
+        first_text = getattr(b[0], "text", "")
+        if last_text and first_text and not last_text[-1].isspace() and not first_text[0].isspace():
+            a.append(TextNode(" "))
+    a.extend(b)
 
 
 def _clause_to_slug(clause: str) -> str:
@@ -213,12 +231,24 @@ def _append_main(main: List[MainElement], elem: MainElement) -> None:
             return
 
     # Merge an orphan ParagraphBlock (num=0, id="") into the previous
-    # ParagraphBlock.  This happens when a PreBlock or GrammarBlock starts
-    # at the top of a page but the containing paragraph is on the preceding
-    # page, so the per-page parser cannot attach it to a paragraph context.
+    # ParagraphBlock.  This happens when a PreBlock, GrammarBlock, or prose
+    # continuation starts at the top of a page but the containing paragraph
+    # is on the preceding page, so the per-page parser cannot attach it to a
+    # paragraph context.  A leading prose continuation is appended to the
+    # previous paragraph's trailing prose so a paragraph split across a page
+    # boundary stays a single <p>.
     if isinstance(prev, ParagraphBlock) and isinstance(elem, ParagraphBlock):
         if elem.num == 0 and not elem.id:
-            prev.children.extend(elem.children)
+            if (
+                prev.children
+                and isinstance(prev.children[-1], ProseBlock)
+                and elem.children
+                and isinstance(elem.children[0], ProseBlock)
+            ):
+                _join_inlines(prev.children[-1].inlines, elem.children[0].inlines)
+                prev.children.extend(elem.children[1:])
+            else:
+                prev.children.extend(elem.children)
             return
 
     main.append(elem)

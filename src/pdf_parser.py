@@ -1071,6 +1071,18 @@ class PageParser:
                     return False
         return True
 
+    def _is_cover_banner_block(self, block: dict) -> bool:
+        """Return True if *block* is a stray ISO cover banner.
+
+        The first numbered content page of a draft carries a stray duplicate of
+        the ISO cover banner (e.g. ``INTERNATIONAL STANDARD ©ISO/IEC
+        ISO/IEC 9899:202y``) before the first heading.  The real cover banner
+        lives on the abstract cover sheet and is handled by ``_parse_abstract``;
+        this stray duplicate is skipped rather than serialised into the body.
+        """
+        text = "".join(s["text"] for ln in block.get("lines", []) for s in ln.get("spans", []))
+        return text.strip().startswith("INTERNATIONAL STANDARD")
+
     def _parse_headings(
         self, block: dict, llmap: Dict[float, List[dict]]
     ) -> Tuple[List[Heading], Optional[dict]]:
@@ -1359,20 +1371,40 @@ class PageParser:
         """Return True if *lines* are production-only (no term) continuation lines.
 
         These appear at the start of a page when a grammar block spills across a
-        page boundary.  All lines are at the production column (x0 > 130 pt) and
-        contain italic or monospace-bold content typical of grammar productions.
+        page boundary, and inline in a paragraph (e.g. constraint examples).
+        All lines are at the production column and contain italic or monospace
+        content typical of grammar productions.
+
+        In the standard production column (x0 ≥ 125 pt) italic or monospace
+        content is enough.  In the intermediate band (x0 110–125 pt, used by
+        grammar forms nested inside a paragraph) the line must additionally
+        contain italic nonterminals and no roman prose, so that continuation
+        prose with monospace identifiers is not misclassified as grammar.
         """
         if not lines:
             return False
         for line in lines:
-            if line["bbox"][0] < 125.0:
-                return False
+            x0 = line["bbox"][0]
+            spans = line.get("spans", [])
             has_grammar_content = any(
-                _is_italic(s["font"]) or (_is_mono(s["font"]) and s["text"].strip())
-                for s in line.get("spans", [])
+                _is_italic(s["font"]) or (_is_mono(s["font"]) and s["text"].strip()) for s in spans
             )
             if not has_grammar_content:
                 return False
+            if x0 < 110.0:
+                return False
+            if x0 < 125.0:
+                # Intermediate band: require italic nonterminals and no roman prose.
+                has_italic = any(_is_italic(s["font"]) and s["text"].strip() for s in spans)
+                has_roman_prose = any(
+                    not _is_italic(s["font"])
+                    and not _is_mono(s["font"])
+                    and not _is_math(s["font"])
+                    and s["text"].strip()
+                    for s in spans
+                )
+                if not has_italic or has_roman_prose:
+                    return False
         return True
 
     def _extract_grammar_block(
@@ -2002,7 +2034,9 @@ class PageParser:
             block = blocks[i]
             text = "".join(s["text"] for ln in block["lines"] for s in ln["spans"]).strip()
 
-            # ISO cover: block containing "INTERNATIONAL STANDARD"
+            # ISO cover: block containing "INTERNATIONAL STANDARD".  The cover
+            # banner is part of the abstract cover sheet, so it is serialised as
+            # an ISOCoverBlock (standard reference + document title).
             if "INTERNATIONAL STANDARD" in text:
                 flush_bullets()
                 standard_ref = ""
@@ -2179,16 +2213,31 @@ class PageParser:
                 bullet_buffer = []
 
         ordered_buffer: List[dict] = []
-        # Inlines for a phantom OL item that spilled over from the previous page
-        orphan_ol_continuation: Optional[List[Inline]] = None
+        # Paragraph content spilled over from the previous page (no paragraph
+        # number here).  Accumulated into a num=0 placeholder ParagraphBlock
+        # that _append_main merges into the previous page's paragraph.
+        orphan_para: Optional[_ParaBuilder] = None
+
+        def _orphan_para() -> _ParaBuilder:
+            """Return the orphan (num=0) paragraph builder, creating it if needed."""
+            nonlocal orphan_para
+            if orphan_para is None:
+                orphan_para = _ParaBuilder("", 0)
+            return orphan_para
 
         def flush_ordered() -> None:
-            nonlocal ordered_buffer, orphan_ol_continuation
+            nonlocal ordered_buffer, orphan_para
             if ordered_buffer:
                 items: List[OrderedItem] = []
-                if orphan_ol_continuation is not None:
-                    items.append(OrderedItem(orphan_ol_continuation, is_continuation=True))
-                    orphan_ol_continuation = None
+                if orphan_para is not None:
+                    # A prose-only orphan paragraph is a spilled list-item tail;
+                    # attach it as the continuation of the first OL item.
+                    raw = orphan_para._raw
+                    if raw and len(raw) == 1 and isinstance(raw[0], _TempProseBlock):
+                        items.append(OrderedItem(raw[0].inlines, is_continuation=True))
+                    else:
+                        elements.append(orphan_para.build())
+                    orphan_para = None
                 for bk in ordered_buffer:
                     inlines = self._extract_ordered_item_inlines(bk, llmap)
                     items.append(OrderedItem(inlines))
@@ -2199,11 +2248,11 @@ class PageParser:
                     elements.append(ol)
                 ordered_buffer = []
             else:
-                # No real OL items: the orphan text is standalone prose
+                # No real OL items: the orphan content is standalone prose
                 # (e.g. a Recommended-practice note), not an OL continuation.
-                if orphan_ol_continuation is not None:
-                    elements.append(ParagraphBlock("", 0, [ProseBlock(orphan_ol_continuation)]))
-                orphan_ol_continuation = None
+                if orphan_para is not None:
+                    elements.append(orphan_para.build())
+                    orphan_para = None
 
         defn_buffer: List[DefnItem] = []
         expecting_defn_dd: bool = False
@@ -2240,6 +2289,11 @@ class PageParser:
             # Flush buffered code-block lines when we leave a gray rect.
             if pre_buf and not self._is_in_gray_rect(block["bbox"]):
                 flush_pre_buf()
+
+            # The first numbered content page repeats the ISO cover banner from
+            # the abstract cover sheet as a stray block; skip it.
+            if self._is_cover_banner_block(block):
+                continue
 
             if self._is_heading_block(block):
                 flush_ordered()
@@ -2338,7 +2392,11 @@ class PageParser:
                 pre_buf.append(block)
 
             else:
-                # Continuation block: prose or bridge between code blocks
+                # Continuation block: prose, grammar, or bridge between code
+                # blocks (no paragraph number — the paragraph started on a
+                # previous page or is an Annex A grammar block).  Content is
+                # accumulated into the active paragraph (or the orphan num=0
+                # paragraph) so nothing is dropped across page boundaries.
                 if expecting_defn_dd and defn_buffer:
                     lines = self._block_lines_without_para_num(block)
                     if lines:
@@ -2355,44 +2413,44 @@ class PageParser:
                     lines = self._block_lines_without_para_num(block)
                     if lines:
                         if self._is_grammar_lines(lines):
-                            if current_para is None:
-                                # Annex A: grammar block with no paragraph number
-                                current_para = _ParaBuilder("", 0)
+                            target = current_para if current_para is not None else _orphan_para()
                             for gb in self._extract_grammar_blocks(lines, llmap):
-                                current_para.add(gb)
+                                target.add(gb)
                         elif self._is_grammar_intro_line(lines):
                             # Annex A single-line term (e.g. "keyword: one of");
                             # productions follow in separate continuation blocks.
-                            if current_para is None:
-                                current_para = _ParaBuilder("", 0)
-                            current_para.add(self._extract_grammar_block(lines, llmap))
+                            target = current_para if current_para is not None else _orphan_para()
+                            target.add(self._extract_grammar_block(lines, llmap))
                         elif self._is_grammar_continuation_lines(lines):
                             # Productions that either continue across a page boundary
                             # or follow a single-line Annex A term block.
                             prods = self._extract_grammar_block_productions(lines, llmap)
-                            if (
-                                current_para is not None
-                                and current_para._raw
-                                and isinstance(current_para._raw[-1], GrammarBlock)
-                            ):
-                                # Attach to the active grammar block (Annex A columns)
-                                current_para._raw[-1].productions.extend(prods)
-                            elif current_para is None:
-                                # Orphan continuation across a page boundary
-                                elements.append(ParagraphBlock("", 0, [GrammarBlock("", prods)]))
+                            if current_para is not None:
+                                if current_para._raw and isinstance(
+                                    current_para._raw[-1], GrammarBlock
+                                ):
+                                    # Attach to the active grammar block (Annex A columns)
+                                    current_para._raw[-1].productions.extend(prods)
+                                else:
+                                    # Mid-paragraph lines that merely look like grammar
+                                    # (e.g. wrapped code lines) stay prose.
+                                    current_para.add(
+                                        _TempProseBlock(
+                                            self._process_lines_to_inlines(lines, llmap)
+                                        )
+                                    )
                             else:
-                                # current_para exists but last child is not a grammar
-                                # block — treat as prose (e.g. wrapped code lines).
-                                inlines = self._process_lines_to_inlines(lines, llmap)
-                                current_para.add(_TempProseBlock(inlines))
-                        elif current_para is not None:
-                            inlines = self._process_lines_to_inlines(lines, llmap)
-                            current_para.add(_TempProseBlock(inlines))
+                                # Orphan continuation across a page boundary.
+                                target = _orphan_para()
+                                if target._raw and isinstance(target._raw[-1], GrammarBlock):
+                                    target._raw[-1].productions.extend(prods)
+                                else:
+                                    target.add(GrammarBlock("", prods))
                         else:
-                            # Potential orphan OL item tail spilling from previous page.
-                            # If no OL items follow, flush_ordered will turn this into
-                            # a placeholder prose paragraph instead of discarding it.
-                            orphan_ol_continuation = self._process_lines_to_inlines(lines, llmap)
+                            target = current_para if current_para is not None else _orphan_para()
+                            target.add(
+                                _TempProseBlock(self._process_lines_to_inlines(lines, llmap))
+                            )
 
         flush_pre_buf()
         flush_ordered()
