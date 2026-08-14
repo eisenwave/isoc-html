@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate all golden HTML files for a draft from its source PDF.
+"""Regenerate all golden HTML files from the source PDFs.
 
 Golden pages live in per-draft directories under ``pages/``::
 
@@ -8,14 +8,16 @@ Golden pages live in per-draft directories under ``pages/``::
     pages/n3220/74.html
     …
 
-The mapping from golden-file stem to PDF page is derived from the PDF's
-page footers, so no front-matter offsets are hard-coded and the same
-script works for any draft.
+By default every draft with a ``pages/<draft>/`` directory is regenerated
+from ``<draft>.pdf`` in the project root.  Pass a PDF path to regenerate
+only that draft.
 
 Usage:
     python regenerate_pages.py [pdf_path]
 
-<pdf_path> defaults to n3685.pdf in the same directory as this script.
+The mapping from golden-file stem to PDF page is derived from the PDF's
+page footers, so no front-matter offsets are hard-coded and the same
+script works for any draft.
 """
 
 from __future__ import annotations
@@ -96,33 +98,53 @@ def stem_sort_key(stem: str) -> Tuple[int, int]:
 
 def main() -> None:
     script_dir = Path(__file__).parent
-    pdf_path = Path(sys.argv[1]) if len(sys.argv) > 1 else script_dir / "n3685.pdf"
+    pages_root = script_dir / "pages"
 
-    if not pdf_path.exists():
-        sys.exit(f"PDF not found: {pdf_path}")
+    if len(sys.argv) > 1:
+        # Regenerate a single draft only.
+        drafts = [Path(sys.argv[1]).stem]
+    elif pages_root.is_dir():
+        # Regenerate every draft that has a golden-pages directory.
+        drafts = sorted(d.name for d in pages_root.iterdir() if d.is_dir())
+    else:
+        drafts = []
 
-    pages_dir = script_dir / "pages" / pdf_path.stem
-    if not pages_dir.is_dir():
-        sys.exit(f"No golden pages directory found for {pdf_path.name}: {pages_dir}")
+    if not drafts:
+        sys.exit(f"No golden pages directories found under {pages_root}")
 
-    stem_to_index = build_stem_to_pdf_index(str(pdf_path))
-    html_files = sorted(pages_dir.glob("*.html"), key=lambda p: stem_sort_key(p.stem))
+    total_pages = 0
+    for draft in drafts:
+        pdf_path = script_dir / f"{draft}.pdf"
+        pages_dir = pages_root / draft
 
-    if not html_files:
-        sys.exit(f"No HTML files found in {pages_dir}")
-
-    for html_path in html_files:
-        stem = html_path.stem
-        if stem not in stem_to_index:
-            print(f"Skipping {html_path.name}: no PDF page found for this stem")
+        if not pdf_path.exists():
+            print(f"Skipping {draft}: PDF not found ({pdf_path.name})")
             continue
-        pdf_index = stem_to_index[stem]
+        if not pages_dir.is_dir():
+            print(f"Skipping {draft}: no golden pages directory {pages_dir}")
+            continue
 
-        print(f"Regenerating {html_path.relative_to(script_dir)} from PDF page {pdf_index + 1}...")
-        page = parse_page(str(pdf_path), pdf_index)
-        html_path.write_text(prettify(serialize(page)), encoding="utf-8")
+        stem_to_index = build_stem_to_pdf_index(str(pdf_path))
+        html_files = sorted(pages_dir.glob("*.html"), key=lambda p: stem_sort_key(p.stem))
+        if not html_files:
+            print(f"Skipping {draft}: no HTML files in {pages_dir}")
+            continue
 
-    print(f"Done ({len(html_files)} page(s) processed).")
+        for html_path in html_files:
+            stem = html_path.stem
+            if stem not in stem_to_index:
+                print(f"Skipping {html_path.name}: no PDF page found for this stem")
+                continue
+            pdf_index = stem_to_index[stem]
+
+            print(
+                f"Regenerating {html_path.relative_to(script_dir)} from PDF page {pdf_index + 1}..."
+            )
+            page = parse_page(str(pdf_path), pdf_index)
+            html_path.write_text(prettify(serialize(page)), encoding="utf-8")
+            total_pages += 1
+
+    print(f"Done ({total_pages} page(s) regenerated).")
 
 
 if __name__ == "__main__":

@@ -211,16 +211,18 @@ For example, document page 13 is PDF page 30:
 
 ## Updating Golden Pages
 
-When the serialiser output changes intentionally, regenerate all golden files
-for a draft (defaults to `n3685.pdf`):
+When the serialiser output changes intentionally, regenerate the golden files
+for every draft that has a `pages/<draft>/` directory:
 
 ```bash
-.venv/bin/python3 regenerate_pages.py n3685.pdf
+.venv/bin/python3 regenerate_pages.py
 ```
 
-The script rewrites every `*.html` under `pages/<draft>/`
-and derives the stem → PDF-page mapping from the PDF's footers,
-so it works unchanged for any draft:
+Each draft is regenerated from `<draft>.pdf` in the project root,
+and the stem → PDF-page mapping is derived from that PDF's footers,
+so no front-matter offsets are hard-coded.
+
+To regenerate a single draft, pass its PDF path:
 
 ```bash
 .venv/bin/python3 regenerate_pages.py n3220.pdf
