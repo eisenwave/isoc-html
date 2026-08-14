@@ -1,10 +1,18 @@
 """
-Tests for all golden HTML pages in pages/*.
+Tests for all golden HTML pages in pages/<draft>/.
 
-For each pages/N.html, the 0-based PDF page index is N + (30 - 13) - 1:
-  page 13 → PDF page 30 (1-based) → index 29 (0-based)
-  page 14 → PDF page 31 (1-based) → index 30 (0-based)
-  …
+Golden pages are organised per draft so several drafts can be tested from
+the same tree::
+
+    pages/n3685/1.html
+    pages/n3685/abstract-1.html
+    pages/n3220/74.html
+    …
+
+The ``--pdf`` option selects the draft.  The golden directory ``pages/<stem>``
+and the stem → PDF-page mapping are derived from the PDF's page footers
+(see ``build_stem_to_pdf_index`` below), so no hard-coded front-matter
+offsets are needed.
 """
 
 from __future__ import annotations
@@ -12,6 +20,9 @@ from __future__ import annotations
 import re
 import unittest
 from pathlib import Path
+from typing import Any, Dict, Tuple
+
+import fitz  # type: ignore[import]
 
 from src.dom import Heading, ParagraphBlock
 from src.html_deserializer import parse_html
@@ -19,41 +30,96 @@ from src.normalize import norm_page
 from src.pdf_parser import parse_page
 from tests.conftest import get_pdf_path
 
-PDF_PATH = get_pdf_path()
-PAGES_DIR = Path(__file__).parent.parent / "pages"
+# ---------------------------------------------------------------------------
+# Golden-page mapping
+# ---------------------------------------------------------------------------
 
-# HTML page N lives at 1-based PDF page N + (30 - 13).
-_PDF_PAGE_OFFSET = 30 - 13
+_FOOTER_Y_MIN = 780.0  # footer region (bottom of page), mirrors pdf_parser
 
+_NAMED_SECTIONS = ("abstract", "contents", "foreword", "introduction")
 _NAMED_STEM_RE = re.compile(r"^(abstract|contents|foreword|introduction)-(\d+)$")
-_NAMED_SECTION_1BASED: dict[str, int] = {
-    "abstract": 1,  # abstract-1 → PDF page 1
-    "contents": 5,  # contents-1 → PDF page 5
-    "foreword": 15,  # foreword-1 → PDF page 15
-    "introduction": 16,  # introduction-1 → PDF page 16
-}
 
 
-def _stem_to_pdf_index(stem: str) -> int:
-    """Return 0-based PDF page index from a golden-file stem."""
+def golden_pages_dir(pdf_path: str) -> Path:
+    """Return the golden-pages directory for *pdf_path* (``pages/<stem>/``)."""
+    stem = Path(pdf_path).stem
+    return Path(__file__).resolve().parent.parent / "pages" / stem
+
+
+def _page_footer(page: Any) -> Tuple[str, str]:
+    """Return the ``(clause, page_num)`` pair from a page's footer text."""
+    clause = ""
+    page_num = ""
+    data: Any = page.get_text("dict")
+    for block in data.get("blocks", []):
+        if "lines" not in block:
+            continue
+        for line in block["lines"]:
+            for span in line["spans"]:
+                if span["bbox"][3] < _FOOTER_Y_MIN:
+                    continue
+                text = span["text"].strip()
+                # Right side of the footer: "ClauseName — N"
+                if " — " in text:
+                    parts = text.rsplit(" — ", 1)
+                    clause = parts[0].strip()
+                    page_num = parts[1].strip()
+    return clause, page_num
+
+
+def build_stem_to_pdf_index(pdf_path: str) -> Dict[str, int]:
+    """Map golden-file stem → 0-based PDF page index for *pdf_path*.
+
+    The PDF is opened once and every page footer is inspected (cheap text
+    extraction, no full parse).  Unmapped pages (cover, blank pages) are
+    simply not part of the mapping:
+
+    * ``abstract-N`` / ``contents-N`` / ``foreword-N`` / ``introduction-N``
+      map to the N-th page of that section (identified by the footer clause);
+    * ``N`` (a document page number) maps to the page whose footer page
+      number is ``N``.
+
+    The named pages use Roman-numeral footers in the PDF; the numbered
+    document pages use Arabic numerals, so the two groups never collide.
+    """
+    doc: Any = fitz.open(pdf_path)
+    result: Dict[str, int] = {}
+    counters: Dict[str, int] = {name: 0 for name in _NAMED_SECTIONS}
+    for idx in range(doc.page_count):
+        clause, page_num = _page_footer(doc[idx])
+        clause_key = clause.lower()
+        if clause_key in counters:
+            counters[clause_key] += 1
+            result[f"{clause_key}-{counters[clause_key]}"] = idx
+        elif page_num.isdigit():
+            result[page_num] = idx
+    return result
+
+
+def stem_sort_key(stem: str) -> Tuple[int, int]:
+    """Return a sort key for a golden-file stem.
+
+    Named pages sort first (in the order they appear in the standard), then
+    numbered document pages in numeric order.  Unrecognised stems sort last
+    in lexicographic order.
+    """
     m = _NAMED_STEM_RE.match(stem)
     if m:
         section, n = m.group(1), int(m.group(2))
-        return _NAMED_SECTION_1BASED[section] + n - 2  # 1-based → 0-based
-    return int(stem) + _PDF_PAGE_OFFSET - 1  # existing formula
-
-
-def _stem_sort_key(stem: str) -> tuple[int, int]:
-    m = _NAMED_STEM_RE.match(stem)
-    if m:
-        section, n = m.group(1), int(m.group(2))
-        order = {"abstract": 0, "contents": 1, "foreword": 2, "introduction": 3}
+        order = {name: i for i, name in enumerate(_NAMED_SECTIONS)}
         return (order[section], n)
-    return (3, int(stem))
+    if stem.isdigit():
+        return (len(_NAMED_SECTIONS), int(stem))
+    return (len(_NAMED_SECTIONS) + 1, 0)
+
+
+PDF_PATH = get_pdf_path()
+PAGES_DIR = golden_pages_dir(PDF_PATH)
+STEM_TO_PDF_INDEX = build_stem_to_pdf_index(PDF_PATH)
 
 
 def _make_test_class(stem: str, golden_path: Path) -> type:
-    pdf_index = _stem_to_pdf_index(stem)
+    pdf_index = STEM_TO_PDF_INDEX[stem]
     class_name = "TestPage" + stem.replace("-", "_")
 
     class _PageTest(unittest.TestCase):
@@ -147,7 +213,15 @@ def _make_test_class(stem: str, golden_path: Path) -> type:
 
 
 # Discover all golden files and register a test class for each.
-for _golden in sorted(PAGES_DIR.glob("*.html"), key=lambda p: _stem_sort_key(p.stem)):
+_cls = None  # loop variable; deleted below so pytest does not collect it twice
+for _golden in sorted(PAGES_DIR.glob("*.html"), key=lambda p: stem_sort_key(p.stem)):
     _stem = _golden.stem
+    if _stem not in STEM_TO_PDF_INDEX:
+        print(f"Warning: no PDF page found for golden page {_golden.name}; skipping")
+        continue
     _cls = _make_test_class(_stem, _golden)
     globals()[_cls.__name__] = _cls
+
+# Remove the loop variable so it is not collected as a duplicate test class
+# (pytest collects every unittest.TestCase subclass found in module globals).
+del _cls

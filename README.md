@@ -62,6 +62,13 @@ The ``--pdf`` option is **required** — point it at the draft you want to test:
 .venv/bin/pytest tests/ --pdf n3685.pdf -q
 ```
 
+The ``--pdf`` value also selects which draft's golden pages are exercised:
+`--pdf n3685.pdf` runs the round-trip tests over `pages/n3685/`,
+`--pdf n3220.pdf` runs them over `pages/n3220/`, and so on.
+Golden pages are auto-discovered per draft,
+and the page numbering is derived from the PDF's footers
+(no hard-coded front-matter offsets).
+
 To test a different draft::
 
 ```bash
@@ -70,8 +77,9 @@ To test a different draft::
 
 Not all structural tests are expected to pass for every draft
 (paragraph numbering and section content differ between revisions),
-but the abstract change-entry test and paragraph-ID uniqueness checks
-are draft-agnostic.
+but `test_no_dangling_section_references` — which verifies every section
+reference resolves to an existing element — passes for both `n3685.pdf`
+and `n3220.pdf`.
 
 ---
 

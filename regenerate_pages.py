@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Regenerate all HTML files in pages/ from the source PDF.
+"""Regenerate all golden HTML files for a draft from its source PDF.
 
-Naming conventions:
-  pages/N.html          -> 1-based PDF page N + 17
-  pages/abstract-N.html -> 1-based PDF page N        (N=1..4)
-  pages/contents-N.html -> 1-based PDF page N+4      (N=1..10)
-  pages/foreword-N.html -> 1-based PDF page N+14     (N=1)
-  pages/introduction-N.html -> 1-based PDF page N+15 (N=1..2)
+Golden pages live in per-draft directories under ``pages/``::
+
+    pages/n3685/1.html
+    pages/n3685/abstract-1.html
+    pages/n3220/74.html
+    …
+
+The mapping from golden-file stem to PDF page is derived from the PDF's
+page footers, so no front-matter offsets are hard-coded and the same
+script works for any draft.
 
 Usage:
     python regenerate_pages.py [pdf_path]
@@ -19,38 +23,75 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from typing import Any, Dict, Tuple
+
+import fitz  # type: ignore[import]
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.html_serializer import prettify, serialize
 from src.pdf_parser import parse_page
 
-_PDF_PAGE_OFFSET = 30 - 13
+_FOOTER_Y_MIN = 780.0  # footer region (bottom of page), mirrors pdf_parser
 
+_NAMED_SECTIONS = ("abstract", "contents", "foreword", "introduction")
 _NAMED_STEM_RE = re.compile(r"^(abstract|contents|foreword|introduction)-(\d+)$")
-_NAMED_SECTION_1BASED: dict[str, int] = {
-    "abstract": 1,
-    "contents": 5,
-    "foreword": 15,
-    "introduction": 16,
-}
 
 
-def _stem_to_pdf_1based(stem: str) -> int:
+def _page_footer(page: Any) -> Tuple[str, str]:
+    """Return the ``(clause, page_num)`` pair from a page's footer text."""
+    clause = ""
+    page_num = ""
+    data: Any = page.get_text("dict")
+    for block in data.get("blocks", []):
+        if "lines" not in block:
+            continue
+        for line in block["lines"]:
+            for span in line["spans"]:
+                if span["bbox"][3] < _FOOTER_Y_MIN:
+                    continue
+                text = span["text"].strip()
+                # Right side of the footer: "ClauseName — N"
+                if " — " in text:
+                    parts = text.rsplit(" — ", 1)
+                    clause = parts[0].strip()
+                    page_num = parts[1].strip()
+    return clause, page_num
+
+
+def build_stem_to_pdf_index(pdf_path: str) -> Dict[str, int]:
+    """Map golden-file stem → 0-based PDF page index for *pdf_path*.
+
+    Derived from the page footers:
+    ``abstract-N`` / ``contents-N`` / ``foreword-N`` / ``introduction-N``
+    map to the N-th page of that section (by footer clause),
+    and ``N`` (a document page number) maps to the page whose footer page
+    number is ``N``.
+    """
+    doc: Any = fitz.open(pdf_path)
+    result: Dict[str, int] = {}
+    counters: Dict[str, int] = {name: 0 for name in _NAMED_SECTIONS}
+    for idx in range(doc.page_count):
+        clause, page_num = _page_footer(doc[idx])
+        clause_key = clause.lower()
+        if clause_key in counters:
+            counters[clause_key] += 1
+            result[f"{clause_key}-{counters[clause_key]}"] = idx
+        elif page_num.isdigit():
+            result[page_num] = idx
+    return result
+
+
+def stem_sort_key(stem: str) -> Tuple[int, int]:
+    """Return a sort key for a golden-file stem (named pages first, then numbers)."""
     m = _NAMED_STEM_RE.match(stem)
     if m:
         section, n = m.group(1), int(m.group(2))
-        return _NAMED_SECTION_1BASED[section] + n - 1
-    return int(stem) + _PDF_PAGE_OFFSET
-
-
-def _stem_sort_key(stem: str) -> tuple[int, int]:
-    m = _NAMED_STEM_RE.match(stem)
-    if m:
-        section, n = m.group(1), int(m.group(2))
-        order = {"abstract": 0, "contents": 1, "foreword": 2, "introduction": 3}
+        order = {name: i for i, name in enumerate(_NAMED_SECTIONS)}
         return (order[section], n)
-    return (3, int(stem))
+    if stem.isdigit():
+        return (len(_NAMED_SECTIONS), int(stem))
+    return (len(_NAMED_SECTIONS) + 1, 0)
 
 
 def main() -> None:
@@ -60,22 +101,28 @@ def main() -> None:
     if not pdf_path.exists():
         sys.exit(f"PDF not found: {pdf_path}")
 
-    pages_dir = script_dir / "pages"
-    html_files = sorted(pages_dir.glob("*.html"), key=lambda p: _stem_sort_key(p.stem))
+    pages_dir = script_dir / "pages" / pdf_path.stem
+    if not pages_dir.is_dir():
+        sys.exit(f"No golden pages directory found for {pdf_path.name}: {pages_dir}")
+
+    stem_to_index = build_stem_to_pdf_index(str(pdf_path))
+    html_files = sorted(pages_dir.glob("*.html"), key=lambda p: stem_sort_key(p.stem))
 
     if not html_files:
         sys.exit(f"No HTML files found in {pages_dir}")
 
     for html_path in html_files:
         stem = html_path.stem
-        pdf_page_1based = _stem_to_pdf_1based(stem)
-        pdf_index = pdf_page_1based - 1
+        if stem not in stem_to_index:
+            print(f"Skipping {html_path.name}: no PDF page found for this stem")
+            continue
+        pdf_index = stem_to_index[stem]
 
-        print(f"Regenerating pages/{html_path.name} from PDF page {pdf_page_1based}...")
+        print(f"Regenerating {html_path.relative_to(script_dir)} from PDF page {pdf_index + 1}...")
         page = parse_page(str(pdf_path), pdf_index)
         html_path.write_text(prettify(serialize(page)), encoding="utf-8")
 
-    print(f"Done ({len(html_files)} page(s) regenerated).")
+    print(f"Done ({len(html_files)} page(s) processed).")
 
 
 if __name__ == "__main__":

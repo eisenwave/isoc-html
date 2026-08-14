@@ -518,18 +518,44 @@ def _make_text_leaf(text: str, font: str, italic_as_i: bool = False) -> list[Inl
 # Link helpers
 # ---------------------------------------------------------------------------
 
+# Named destinations whose remainder is a dotted section number.
+# ``page.N`` / ``Item.N`` / ``lstnumber.N.M`` refs point at PDF artifacts that
+# have no counterpart in the generated HTML, so they are mapped to ``#`` and
+# dropped by the caller instead of producing dangling links.
+_SECTION_DEST_KEYWORDS = frozenset(
+    {"chapter", "section", "subsection", "subsubsection", "paragraph", "table"}
+)
+
 
 def _nameddest_to_href(nameddest: str) -> str:
-    """Convert a PDF named destination to an HTML href fragment."""
+    """Convert a PDF named destination to an HTML href fragment.
+
+    ``Hfootnote.N`` destinations become ``#footnote-N``.
+
+    Section-style destinations carry a dotted section number after an
+    optional ``0`` part-number placeholder.  Both the newer format used by
+    recent drafts (``subsection.0.5.2.1``) and the older format used by
+    e.g. C23 (``subsection.5.1.1``, ``section.7.27``) are accepted, and both
+    map to the plain section number::
+
+        chapter.0.7         → #7
+        subsection.0.7.1.1  → #7.1.1
+        section.7.27        → #7.27
+        subsubsection.6.2.6.1 → #6.2.6.1
+
+    Any other destination (``page.N``, ``Item.N``, ``lstnumber.N.M``, …)
+    has no in-document target and maps to ``#`` so callers drop the link.
+    """
     if nameddest.startswith("H"):
         # e.g. Hfootnote.6  →  #footnote-6
         rest = nameddest[1:]
         return "#" + rest.replace(".", "-")
-    else:
-        # e.g. chapter.0.7         → #7
-        #      subsection.0.7.1.1  → #7.1.1
-        parts = nameddest.split(".")
-        return "#" + ".".join(parts[2:])
+    parts = nameddest.split(".")
+    if parts and parts[0] in _SECTION_DEST_KEYWORDS:
+        # Skip the ``0`` part-number placeholder when present.
+        start = 2 if len(parts) > 2 and parts[1] == "0" else 1
+        return "#" + ".".join(parts[start:])
+    return "#"
 
 
 # ---------------------------------------------------------------------------
@@ -615,7 +641,18 @@ class PageParser:
             color = d.get("color")
             fill = d.get("fill")
             rect = fitz.Rect(d["rect"])
-            if color == (0.0, 0.0, 0.0) and fill is None and rect.height < 2 and rect.y0 > 400:
+            # Only consider a horizontal rule that is at least 50pt wide.
+            # Real footnote separators span the content column (~170pt); short
+            # segments are artifacts such as fraction bars in math expressions
+            # (e.g. "1/2") and must not be mistaken for the separator, which
+            # would push real body content below them into the footnote region.
+            if (
+                color == (0.0, 0.0, 0.0)
+                and fill is None
+                and rect.height < 2
+                and rect.width > 50
+                and rect.y0 > 400
+            ):
                 if best is None or rect.y0 > best:
                     best = rect.y0
         return best
@@ -673,10 +710,24 @@ class PageParser:
         else:
             est_start = 0
 
-        idx = text.find(needle, est_start)
-        if idx == -1:
-            idx = text.find(needle, 0)
-        if idx != -1:
+        def _valid_match(start: int) -> Optional[int]:
+            """First occurrence of *needle* at/after *start* that is a real link.
+
+            A bare-digit section reference (e.g. ``15``) must not match inside
+            a larger number (e.g. the ``15`` of ``2015``): the PDF sometimes
+            carries spurious links on such substrings.
+            """
+            idx = text.find(needle, start)
+            while idx != -1:
+                if not (needle.isdigit() and idx > 0 and text[idx - 1].isdigit()):
+                    return idx
+                idx = text.find(needle, idx + 1)
+            return None
+
+        idx = _valid_match(est_start)
+        if idx is None:
+            idx = _valid_match(0)
+        if idx is not None:
             return (idx, idx + len(needle))
         return None
 
@@ -982,7 +1033,14 @@ class PageParser:
         return all(_is_bold(s["font"]) for s in spans if s["text"].strip())
 
     def _is_heading_block(self, block: dict) -> bool:
-        """Return True if all spans in this block are bold and start with a section number."""
+        """Return True if a block starts with a bold section-number heading.
+
+        Only the first two lines (the section-ID line and the optional title
+        line) are required to be bold.  PyMuPDF sometimes merges a heading
+        into a single block with the following content (e.g. the unnumbered
+        sub-heading and the first paragraph), so later lines may be ordinary
+        body text; they are ignored here.
+        """
         if block["type"] != 0:
             return False
         lines = block["lines"]
@@ -1000,10 +1058,10 @@ class PageParser:
         # whose first token happens to match SECTION_ID_RE).
         if not _is_bold(first_span["font"]) or _is_mono(first_span["font"]):
             return False
-        # All subsequent non-mono/non-math spans must also be bold; mono (code) spans
+        # The section-ID and title lines must be bold; mono (code) spans
         # (e.g. "<stdalign.h>") and math-font spans (e.g. "⌈x⌉" in §3.28) are allowed
-        # to be non-bold.
-        for line in lines:
+        # to be non-bold.  Lines after the title may be ordinary content.
+        for line in lines[:2]:
             for span in line["spans"]:
                 if (
                     not _is_bold(span["font"])
@@ -1013,8 +1071,21 @@ class PageParser:
                     return False
         return True
 
-    def _parse_headings(self, block: dict, llmap: Dict[float, List[dict]]) -> List[Heading]:
-        """Parse one or more headings from a block (handles multi-heading and same-line title)."""
+    def _parse_headings(
+        self, block: dict, llmap: Dict[float, List[dict]]
+    ) -> Tuple[List[Heading], Optional[dict]]:
+        """Parse headings from the start of *block*.
+
+        Returns a ``(headings, leftover)`` tuple.  *headings* is a list of
+        ``Heading`` objects parsed from the leading lines of the block;
+        *leftover* is a copy of the block containing only the lines that were
+        not part of a heading (``None`` when the whole block was consumed).
+
+        PyMuPDF sometimes merges a heading with the following content into a
+        single block (e.g. the unnumbered sub-heading and first paragraph).
+        Processing stops at the first line that is not a heading, so the
+        caller can re-dispatch the leftover lines as ordinary content.
+        """
         lines = block["lines"]
         headings: List[Heading] = []
         i = 0
@@ -1023,7 +1094,8 @@ class PageParser:
             if not line["spans"]:
                 i += 1
                 continue
-            first_text = line["spans"][0]["text"].strip().rstrip(".")
+            first_span = line["spans"][0]
+            first_text = first_span["text"].strip().rstrip(".")
             annex_m = ANNEX_HEADING_RE.match(first_text)
             if annex_m:
                 # "Annex X" / "(normative)" / "Title" are on separate lines
@@ -1042,7 +1114,11 @@ class PageParser:
                         break
                     i += 1
                 title = "".join(s["text"] for s in title_spans).strip()
-            elif SECTION_ID_RE.match(first_text):
+            elif (
+                SECTION_ID_RE.match(first_text)
+                and _is_bold(first_span["font"])
+                and not _is_mono(first_span["font"])
+            ):
                 section_id = first_text
                 # Title may be on the same line (remaining spans) or on the next line
                 remaining = "".join(s["text"] for s in line["spans"][1:]).strip()
@@ -1059,15 +1135,20 @@ class PageParser:
                     title = ""
                     i += 1
             else:
-                i += 1
-                continue
+                # First line that is not a heading — leave it (and everything
+                # after) for the caller to re-dispatch as ordinary content.
+                break
             # Build rich title inlines when the title contains mono (code) or math spans.
             title_inlines: Optional[List[Inline]] = None
             if title_spans and any(_is_mono(s["font"]) or _is_math(s["font"]) for s in title_spans):
                 llinks = llmap.get(title_spans[0]["bbox"][1]) if title_spans else []
                 title_inlines = self._spans_to_inlines_with_links(title_spans, llinks or [])
             headings.append(Heading(section_id, title, title_inlines=title_inlines))
-        return headings
+
+        leftover: Optional[dict] = None
+        if i < len(lines):
+            leftover = {**block, "lines": lines[i:]}
+        return headings, leftover
 
     def _is_nested_bullet_block(self, block: dict) -> bool:
         """Return True if the first content span is a bullet '\u2022' at the nested indent."""
@@ -2153,7 +2234,9 @@ class PageParser:
                 return
             current_para.add(self._extract_pre_multi(buf))
 
-        for block in blocks:
+        pending: List[dict] = list(blocks)
+        while pending:
+            block = pending.pop(0)
             # Flush buffered code-block lines when we leave a gray rect.
             if pre_buf and not self._is_in_gray_rect(block["bbox"]):
                 flush_pre_buf()
@@ -2163,10 +2246,14 @@ class PageParser:
                 flush_bullets()
                 flush_defns()
                 flush_para()
-                headings = self._parse_headings(block, llmap)
+                headings, leftover = self._parse_headings(block, llmap)
                 elements.extend(headings)
                 if headings:
                     current_section_id = headings[-1].section_id
+                if leftover is not None:
+                    # Heading was merged with following content; re-dispatch
+                    # the leftover lines as ordinary blocks.
+                    pending.insert(0, leftover)
 
             elif self._is_unnumbered_heading_block(block):
                 flush_ordered()

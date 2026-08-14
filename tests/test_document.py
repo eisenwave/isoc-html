@@ -342,6 +342,66 @@ class TestDocument(unittest.TestCase):
             f"<section> elements without 'section-' id prefix: {bad_ids}",
         )
 
+    def test_no_dangling_section_references(self) -> None:
+        """Every section reference must point to an existing element.
+
+        A section reference is any ``<a>`` whose href is a fragment matching
+        the section-number pattern (e.g. ``#6.5.4``, ``#7.27``, ``#A.2.9``,
+        ``#F.10.9.2``).  This covers both the self-referential anchors on
+        headings (``class="section-num"``) and the cross-references in
+        prose.  Each must resolve to at least one element with that id — a
+        dangling reference (e.g. ``#27`` produced by stripping the ``7.``
+        prefix from ``7.27``) is a bug.
+
+        Note: some drafts label two back-matter annexes with the same letter
+        (e.g. both the Change History and the Bibliography as "Annex M" in
+        C23), so a target may legitimately exist more than once; only
+        missing targets are flagged.
+        """
+        import re
+
+        section_ref_re = re.compile(r"^[A-Z]?(?:\d+(?:\.\d+)*|[A-Z](?:\.\d+)*)$")
+
+        # Collect all element ids once (O(n)) instead of calling
+        # find_all(id=…) for every href (O(n²)).
+        all_ids: set[str] = set()
+        for elem in self.soup.find_all(True):
+            eid = elem.get("id")
+            if isinstance(eid, str):
+                all_ids.add(eid)
+
+        dangling: list[str] = []
+        for a in self.soup.find_all("a"):
+            href = a.get("href")
+            if not isinstance(href, str) or not href.startswith("#") or len(href) == 1:
+                continue
+            target = href[1:]
+            if not section_ref_re.match(target):
+                continue
+            if target not in all_ids:
+                dangling.append(href)
+
+        self.assertEqual(
+            dangling,
+            [],
+            "Dangling section references:\n" + "\n".join(f"  {d}" for d in dangling),
+        )
+
+        # Every heading self-link (a.section-num) must point at an existing id.
+        bad_self_links: list[str] = []
+        for a in self.soup.find_all("a", class_="section-num"):
+            href = a.get("href")
+            if not isinstance(href, str):
+                bad_self_links.append("(missing href)")
+                continue
+            if not href.startswith("#") or href[1:] not in all_ids:
+                bad_self_links.append(href)
+        self.assertEqual(
+            bad_self_links,
+            [],
+            f"Section-num anchors that do not resolve to an existing element: {bad_self_links}",
+        )
+
     # ------------------------------------------------------------------
     # Annex A — Language syntax summary
     # ------------------------------------------------------------------

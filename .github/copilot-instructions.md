@@ -33,18 +33,21 @@ isoc-html/
 │   ├── normalize.py        # helper for round-trip comparison in tests
 │   └── style.css           # embedded stylesheet
 ├── tests/
-│   ├── test_pages.py       # golden-file round-trip tests (one per pages/*.html)
+│   ├── test_pages.py       # golden-page mapping + round-trip tests (pages/<draft>/*.html)
 │   └── test_document.py    # structural / content tests on the full document
-├── pages/                  # golden HTML snapshots (committed)
+├── pages/                  # golden HTML snapshots, one subdirectory per draft
+│   ├── n3685/              # e.g. 1.html, abstract-1.html, …
+│   └── n3220/              # e.g. 74.html
 ├── generate.py             # CLI: PDF → full document HTML (stdout)
 ├── convert_page.py         # CLI: PDF + page-number → pretty-printed page HTML
-├── regenerate_pages.py     # CLI: update all pages/*.html from PDF
+├── regenerate_pages.py     # CLI: update all pages/<draft>/*.html from a PDF
 ├── pyproject.toml          # ruff configuration
 └── pyrightconfig.json      # pyright configuration (strict mode)
 ```
 
 The PDF `n3685.pdf` must be present in the project root
 but is **not** committed (it is in `.gitignore`).
+Other drafts (e.g. `n3220.pdf`) can be added the same way.
 
 ---
 
@@ -69,19 +72,33 @@ Python 3.12+ is required.
 ```
 
 The ``--pdf`` option is required — always specify which PDF draft to test.
+The ``--pdf`` value also selects which draft's golden pages are tested:
+`--pdf n3685.pdf` exercises `pages/n3685/`, `--pdf n3220.pdf` exercises
+`pages/n3220/`, and so on.
 
-Expected: **484 passed** (for n3685.pdf).
+Expected: **476 passed** (for n3685.pdf).
 The test suite reads the PDF and parses the whole document,
 so it requires the PDF to be present.
 
 `test_pages.py` does round-trip tests:
-it parses each `pages/*.html` with the HTML deserialiser,
+it discovers every golden HTML page under `pages/<draft>/`,
+parses each one with the HTML deserialiser,
 parses the same page from the PDF with the PDF parser,
 and asserts the two ASTs are equivalent after normalisation.
+The stem → PDF-page mapping is defined in `test_pages.py`
+(`build_stem_to_pdf_index`) and is derived from the PDF's page footers,
+so no front-matter offsets are hard-coded.
 
 `test_document.py` builds the full merged document
 (exactly as `generate.py` does)
 and runs structural checks on the resulting HTML with BeautifulSoup.
+Among them, `test_no_dangling_section_references` verifies that every
+section reference (heading self-links and prose cross-references) resolves
+to an existing element id — this passes for both `n3685.pdf` and `n3220.pdf`.
+
+Note that a few `test_document.py` checks are N3685-content-specific
+(they assert on particular paragraph numbers or a particular PDF page),
+so not every test is expected to pass for every draft.
 
 To run only the document tests:
 
@@ -194,29 +211,31 @@ For example, document page 13 is PDF page 30:
 
 ## Updating Golden Pages
 
-When the serialiser output changes intentionally, regenerate all golden files:
+When the serialiser output changes intentionally, regenerate all golden files
+for a draft (defaults to `n3685.pdf`):
 
 ```bash
-.venv/bin/python3 regenerate_pages.py
+.venv/bin/python3 regenerate_pages.py n3685.pdf
 ```
 
-Or regenerate a single page by running `convert_page.py` and redirecting:
+The script rewrites every `*.html` under `pages/<draft>/`
+and derives the stem → PDF-page mapping from the PDF's footers,
+so it works unchanged for any draft:
 
 ```bash
-.venv/bin/python3 convert_page.py n3685.pdf 30 > pages/13.html
+.venv/bin/python3 regenerate_pages.py n3220.pdf
 ```
 
-Page naming convention:
+Or regenerate a single page by running `convert_page.py` and redirecting
+(the page number is the 1-based PDF page; `pages/<draft>/N.html` holds
+document page N, whose PDF offset depends on the draft's front matter):
 
-| File name         | PDF pages (1-based) |
-|-------------------|---------------------|
-| `abstract-N.html` | N                   |
-| `contents-N.html` | N + 4               |
-| `foreword-N.html` | N + 14              |
-| `introduction-N.html` | N + 15          |
-| `N.html`          | N + 17              |
+```bash
+.venv/bin/python3 convert_page.py n3685.pdf 30 > pages/n3685/13.html
+.venv/bin/python3 convert_page.py n3220.pdf 87 > pages/n3220/74.html
+```
 
-After regenerating, commit the updated `pages/*.html` files.
+Never commit or stage any golden page changes.
 
 ---
 
@@ -251,6 +270,46 @@ applies grammar cross-linking,
 and groups pages into `SectionBlock`s by `current_clause` footer value.
 
 `_clause_to_slug(clause)` lowercases and replaces non-alphanumeric runs with `-`.
+
+### `tests/test_pages.py` — golden-page mapping
+
+The stem → PDF-page mapping lives in `tests/test_pages.py`
+(`build_stem_to_pdf_index`, `golden_pages_dir`, `stem_sort_key`)
+rather than in a separate module,
+because it is only needed by the golden-page tests.
+It is derived from the page footers at runtime:
+- `abstract-N` / `contents-N` / `foreword-N` / `introduction-N`
+  map to the N-th page of that section (identified by the footer clause);
+- `N` (a document page number) maps to the page whose footer page number is `N`.
+
+Because the mapping comes from the footers,
+no front-matter offsets are hard-coded
+and the same code works for any draft.
+The `regenerate_pages.py` CLI embeds its own copy of the mapping
+so it can run without importing the test suite.
+
+### `src/pdf_parser.py` — section references
+
+PDF links carry named destinations such as `section.7.27` or
+`subsection.0.5.2.1`.
+`_nameddest_to_href` maps both the newer `keyword.0.…` format
+(recent drafts like N3685)
+and the older `keyword.…` format
+(C23 / N3220) to a plain section fragment (`#7.27`),
+so cross-references like `7.27` are never split into `7.` plus a
+dangling link to `#27`.
+Non-section destinations (`page.N`, `Item.N`, `lstnumber.N.M`, …)
+map to `#` and are dropped.
+
+Three further `PageParser` rules keep references resolvable for any draft:
+- `_find_footnote_sep_y` ignores horizontal rules shorter than 50pt,
+  so fraction bars in math never push real body content into the footnote
+  region;
+- `_is_heading_block` / `_parse_headings` accept headings merged by
+  PyMuPDF with the following content into one block,
+  re-dispatching the leftover lines as ordinary content;
+- `_find_link_split` refuses to match a bare-digit section reference
+  inside a larger number (e.g. the `15` of `2015`).
 
 ### `src/html_serializer.py` — rendering
 
